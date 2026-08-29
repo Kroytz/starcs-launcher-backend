@@ -251,14 +251,19 @@ func (r *Repository) Announcements(ctx context.Context) ([]domain.Announcement, 
 		if published.Valid {
 			publishedAt = published.Time
 		}
+		renderPayload, err := r.resolveAnnouncementPayload(ctx, payload.String)
+		if err != nil {
+			return nil, fmt.Errorf("resolve announcement %d payload: %w", id, err)
+		}
 		items = append(items, domain.Announcement{
-			ID:          strconv.FormatUint(id, 10),
-			Title:       title,
-			Content:     announcementSummary(payload.String),
-			Level:       map[bool]string{true: "event", false: "info"}[announcementType == 1],
-			Dismissible: true,
-			DisplayDate: publishedAt.Format("01 / 02"),
-			PublishedAt: publishedAt.Format(time.RFC3339),
+			ID:            strconv.FormatUint(id, 10),
+			Title:         title,
+			Content:       announcementSummary(payload.String),
+			Level:         map[bool]string{true: "event", false: "info"}[announcementType == 1],
+			Dismissible:   true,
+			DisplayDate:   publishedAt.Format("01 / 02"),
+			PublishedAt:   publishedAt.Format(time.RFC3339),
+			RenderPayload: renderPayload,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -582,6 +587,50 @@ func announcementSummary(raw string) string {
 		}
 	}
 	return "点击查看公告详情"
+}
+
+func announcementPayload(raw string) json.RawMessage {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !json.Valid([]byte(raw)) {
+		return json.RawMessage(`{}`)
+	}
+	return json.RawMessage(raw)
+}
+
+func (r *Repository) resolveAnnouncementPayload(ctx context.Context, raw string) (json.RawMessage, error) {
+	payload := announcementPayload(raw)
+	var document map[string]any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		return json.RawMessage(`{}`), nil
+	}
+	sections, _ := document["sections"].([]any)
+	for _, rawSection := range sections {
+		section, _ := rawSection.(map[string]any)
+		blocks, _ := section["blocks"].([]any)
+		for _, rawBlock := range blocks {
+			block, _ := rawBlock.(map[string]any)
+			imageID, ok := block["imageId"].(float64)
+			if !ok || imageID <= 0 {
+				continue
+			}
+			var relativePath string
+			err := r.db.QueryRowContext(ctx, `SELECT COALESCE(relative_path, '') FROM scs_file WHERE id = ? LIMIT 1`, uint64(imageID)).Scan(&relativePath)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if imageURL := publicFileURL(relativePath); imageURL != "" {
+				block["imageUrl"] = imageURL
+			}
+		}
+	}
+	resolved, err := json.Marshal(document)
+	if err != nil {
+		return nil, err
+	}
+	return resolved, nil
 }
 
 func publicFileURL(relativePath string) string {

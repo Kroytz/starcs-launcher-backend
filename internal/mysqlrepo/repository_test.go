@@ -9,6 +9,16 @@ func TestAnnouncementSummaryUsesFirstTextBlock(t *testing.T) {
 	}
 }
 
+func TestAnnouncementPayloadPreservesValidJSONAndRejectsInvalidInput(t *testing.T) {
+	valid := `{"sections":[{"title":"更新"}]}`
+	if got := string(announcementPayload(valid)); got != valid {
+		t.Fatalf("unexpected payload %q", got)
+	}
+	if got := string(announcementPayload("not-json")); got != "{}" {
+		t.Fatalf("invalid payload should become an empty object, got %q", got)
+	}
+}
+
 func TestCollectionCountSupportsJSONAndDelimitedText(t *testing.T) {
 	tests := map[string]int{
 		`[]`:          0,
