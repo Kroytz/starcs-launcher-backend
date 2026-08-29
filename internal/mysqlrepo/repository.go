@@ -122,6 +122,7 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 			AND i.number > 0
 			AND (i.expired IS NULL OR i.expired > NOW())
 			AND p.show_state IN (1, 3)
+			AND LOWER(COALESCE(p.label, '')) NOT LIKE '%character%'
 		ORDER BY p.rarity_id DESC, i.updated DESC, i.product_id ASC
 	`, steamID)
 	if err != nil {
@@ -670,6 +671,10 @@ func collectionCount(raw string) int {
 func displayType(label string, productType int) (string, string) {
 	normalized := strings.ToLower(label)
 	switch {
+	case strings.Contains(normalized, "itemcard"):
+		return "道具卡", "package"
+	case strings.Contains(normalized, "character"):
+		return "集字", "trophy"
 	case strings.Contains(normalized, "playermodel"), strings.Contains(normalized, "player_skin"), strings.Contains(normalized, "agent"):
 		return "玩家外观", "user-round"
 	case strings.Contains(normalized, "weapon"), strings.Contains(normalized, "weaponmodel"):

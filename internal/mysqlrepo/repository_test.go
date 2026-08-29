@@ -44,6 +44,15 @@ func TestCollectionCountSupportsJSONAndDelimitedText(t *testing.T) {
 	}
 }
 
+func TestDisplayTypeMapsItemCardsAndCharacters(t *testing.T) {
+	if category, icon := displayType("ItemCard", 1); category != "道具卡" || icon != "package" {
+		t.Fatalf("unexpected ItemCard mapping: %q %q", category, icon)
+	}
+	if category, icon := displayType("Character", 2); category != "集字" || icon != "trophy" {
+		t.Fatalf("unexpected Character mapping: %q %q", category, icon)
+	}
+}
+
 func TestChallengeCategoryAndTitle(t *testing.T) {
 	category, icon := challengeCategory("chatcolor")
 	if category != "聊天颜色" || icon != "sparkles" {
