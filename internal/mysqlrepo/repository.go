@@ -183,7 +183,9 @@ func (r *Repository) challengeInventory(ctx context.Context, steamID uint64) ([]
 		       AND c.enabled = 1
 		       AND (c.restricted_steam_id IS NULL OR c.restricted_steam_id = i.SteamID)
 		WHERE i.SteamID = ?
-		  AND (i.DateOfExpiration IS NULL OR i.DateOfExpiration > NOW())
+		  AND (i.DateOfExpiration IS NULL
+		       OR i.DateOfExpiration < '1000-01-01 00:00:00'
+		       OR i.DateOfExpiration > NOW())
 		GROUP BY c.item_type, c.unique_id, c.display_name, c.category_name, c.sort_order
 		ORDER BY c.sort_order, c.item_type, c.unique_id
 	`, steamID)
