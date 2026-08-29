@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/starcs/star-launcher-backend/internal/api"
+	"github.com/starcs/star-launcher-backend/internal/config"
 	"github.com/starcs/star-launcher-backend/internal/demo"
 	"github.com/starcs/star-launcher-backend/internal/mysqlrepo"
 )
@@ -20,13 +21,25 @@ const defaultOrigins = "http://localhost:1420,http://tauri.localhost,https://tau
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	envPath, err := config.LoadDotEnv()
+	if err != nil {
+		logger.Error("load .env", "error", err)
+		os.Exit(1)
+	}
+	if envPath != "" {
+		logger.Info("environment file loaded", "path", envPath)
+	}
 	addr := envOrDefault("STAR_BACKEND_ADDR", ":8080")
 	origins := strings.Split(envOrDefault("STAR_CORS_ORIGINS", defaultOrigins), ",")
 
 	var players api.PlayerRepository
-	dsn := strings.TrimSpace(os.Getenv("STAR_DB_DSN"))
-	if dsn == "" {
-		logger.Warn("STAR_DB_DSN is not configured; real login and inventory are unavailable")
+	dsn, databaseConfigured, err := config.DatabaseDSN()
+	if err != nil {
+		logger.Error("load database configuration", "error", err)
+		os.Exit(1)
+	}
+	if !databaseConfigured {
+		logger.Warn("database is not configured; real login and inventory are unavailable")
 	} else {
 		repository, err := mysqlrepo.Open(context.Background(), dsn)
 		if err != nil {

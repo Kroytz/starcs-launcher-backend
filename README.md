@@ -13,14 +13,20 @@ go test ./...
 go run ./cmd/server
 ```
 
-默认监听 `http://localhost:8080`。可通过环境变量调整：
+默认监听 `http://localhost:8080`。程序会自动读取当前工作目录、exe 所在目录或 exe 上级目录中的第一个 `.env`；进程环境变量优先于 `.env`。也可以直接设置环境变量：
 
 ```powershell
 $env:STAR_BACKEND_ADDR = ":8080"
 $env:STAR_CORS_ORIGINS = "http://localhost:1420,http://tauri.localhost,https://tauri.localhost,tauri://localhost"
-$env:STAR_DB_DSN = "数据库用户:数据库密码@tcp(mysql.example.com:3306)/db_star?charset=utf8mb4&parseTime=true&loc=Local&timeout=5s&readTimeout=8s&writeTimeout=8s"
+$env:STAR_DB_USER = "数据库用户"
+$env:STAR_DB_PASSWORD = "数据库密码"
+$env:STAR_DB_HOST = "mysql.example.com"
+$env:STAR_DB_PORT = "3306"
+$env:STAR_DB_NAME = "db_star"
 go run ./cmd/server
 ```
+
+推荐使用上述分离字段，密码中的 `@`、`:`、`/` 等字符都可以原样填写。也支持完整的 `STAR_DB_DSN`，格式必须是 `用户名:完整密码@tcp(主机:端口)/数据库?...`；密码中的 `@` 无需改写为 `%40`。
 
 ## 接口
 
