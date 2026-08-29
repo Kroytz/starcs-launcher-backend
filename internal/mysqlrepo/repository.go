@@ -18,13 +18,23 @@ import (
 var ErrInvalidCredentials = errors.New("invalid credentials")
 
 type Repository struct {
-	db *sql.DB
+	db                        *sql.DB
+	challengeDB               *sql.DB
+	challengeCatalogAvailable bool
 }
 
 func Open(ctx context.Context, dsn string) (*Repository, error) {
+	db, err := openDatabase(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open primary database: %w", err)
+	}
+	return &Repository{db: db}, nil
+}
+
+func openDatabase(ctx context.Context, dsn string) (*sql.DB, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open mysql: %w", err)
+		return nil, err
 	}
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
@@ -34,13 +44,44 @@ func Open(ctx context.Context, dsn string) (*Repository, error) {
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("ping mysql: %w", err)
+		return nil, err
 	}
-	return &Repository{db: db}, nil
+	return db, nil
+}
+
+func (r *Repository) ConnectChallenge(ctx context.Context, dsn string) error {
+	db, err := openDatabase(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("open challenge database: %w", err)
+	}
+	if r.challengeDB != nil {
+		_ = r.challengeDB.Close()
+	}
+	r.challengeDB = db
+	err = db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = DATABASE() AND table_name = 'starduststore_catalog'
+		)
+	`).Scan(&r.challengeCatalogAvailable)
+	if err != nil {
+		_ = db.Close()
+		r.challengeDB = nil
+		return fmt.Errorf("inspect challenge catalog: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ChallengeCatalogAvailable() bool {
+	return r.challengeCatalogAvailable
 }
 
 func (r *Repository) Close() error {
-	return r.db.Close()
+	var challengeErr error
+	if r.challengeDB != nil {
+		challengeErr = r.challengeDB.Close()
+	}
+	return errors.Join(r.db.Close(), challengeErr)
 }
 
 func (r *Repository) Authenticate(ctx context.Context, steamID uint64, password string) error {
@@ -107,6 +148,8 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 		items = append(items, domain.InventoryItem{
 			ProductID:  productID,
 			ID:         fmt.Sprintf("product-%d", productID),
+			Source:     "starlight",
+			UniqueID:   strconv.FormatInt(productID, 10),
 			Name:       name,
 			Type:       itemType,
 			Rarity:     displayRarity(rarityID, rarityName),
@@ -118,6 +161,61 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate inventory: %w", err)
+	}
+	if r.challengeDB != nil && r.challengeCatalogAvailable {
+		challengeItems, err := r.challengeInventory(ctx, steamID)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, challengeItems...)
+	}
+	return items, nil
+}
+
+func (r *Repository) challengeInventory(ctx context.Context, steamID uint64) ([]domain.InventoryItem, error) {
+	rows, err := r.challengeDB.QueryContext(ctx, `
+		SELECT c.item_type, c.unique_id, c.display_name, c.category_name,
+		       COUNT(*), MIN(i.DateOfPurchase)
+		FROM starduststore_items AS i
+		INNER JOIN starduststore_catalog AS c
+		        ON BINARY c.item_type = BINARY i.Type
+		       AND BINARY c.unique_id = BINARY i.UniqueId
+		       AND c.enabled = 1
+		       AND (c.restricted_steam_id IS NULL OR c.restricted_steam_id = i.SteamID)
+		WHERE i.SteamID = ?
+		  AND (i.DateOfExpiration IS NULL OR i.DateOfExpiration > NOW())
+		GROUP BY c.item_type, c.unique_id, c.display_name, c.category_name, c.sort_order
+		ORDER BY c.sort_order, c.item_type, c.unique_id
+	`, steamID)
+	if err != nil {
+		return nil, fmt.Errorf("query challenge inventory: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]domain.InventoryItem, 0)
+	for rows.Next() {
+		var itemType, uniqueID, displayName, category string
+		var quantity int64
+		var acquiredAt time.Time
+		if err := rows.Scan(&itemType, &uniqueID, &displayName, &category, &quantity, &acquiredAt); err != nil {
+			return nil, fmt.Errorf("scan challenge inventory: %w", err)
+		}
+		_, icon := challengeCategory(itemType)
+		items = append(items, domain.InventoryItem{
+			ID:         "challenge-" + itemType + "-" + uniqueID,
+			Source:     "stardust",
+			UniqueID:   uniqueID,
+			Name:       displayName,
+			Type:       category,
+			Rarity:     "星尘",
+			Quantity:   quantity,
+			Icon:       icon,
+			Tone:       "from-secondary to-violet-600",
+			AcquiredAt: acquiredAt.Format(time.RFC3339),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate challenge inventory: %w", err)
 	}
 	return items, nil
 }
@@ -198,23 +296,76 @@ func (r *Repository) StoreItems(ctx context.Context) ([]domain.StoreItem, error)
 		if err := rows.Scan(&pricingID, &productID, &name, &description, &label, &productType, &rarityID, &rarityName, &price, &sortOrder, &relativePath); err != nil {
 			return nil, fmt.Errorf("scan store item: %w", err)
 		}
-		_, icon := displayType(label, productType)
+		category, icon := displayType(label, productType)
 		items = append(items, domain.StoreItem{
-			ID:          fmt.Sprintf("pricing-%d", pricingID),
-			Currency:    "starlight",
-			Title:       name,
-			Description: description,
-			Price:       int64(price),
-			Icon:        icon,
-			Tone:        rarityTone(rarityID),
-			Tag:         displayRarity(rarityID, rarityName),
-			Enabled:     true,
-			Sort:        sortOrder,
-			ImageURL:    publicFileURL(relativePath),
+			ID:              fmt.Sprintf("pricing-%d", pricingID),
+			ExternalID:      strconv.FormatInt(productID, 10),
+			Currency:        "starlight",
+			Category:        category,
+			PurchaseBackend: "star-product",
+			Title:           name,
+			Description:     description,
+			Price:           int64(price),
+			Icon:            icon,
+			Tone:            rarityTone(rarityID),
+			Tag:             displayRarity(rarityID, rarityName),
+			Enabled:         true,
+			Sort:            sortOrder,
+			ImageURL:        publicFileURL(relativePath),
 		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate store items: %w", err)
+	}
+	if r.challengeDB != nil && r.challengeCatalogAvailable {
+		challengeItems, err := r.challengeStoreItems(ctx)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, challengeItems...)
+	}
+	return items, nil
+}
+
+func (r *Repository) challengeStoreItems(ctx context.Context) ([]domain.StoreItem, error) {
+	rows, err := r.challengeDB.QueryContext(ctx, `
+		SELECT item_type, unique_id, category_name, display_name, price, sort_order
+		FROM starduststore_catalog
+		WHERE enabled = 1 AND purchasable = 1 AND hidden = 0
+		ORDER BY sort_order, category_name, display_name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query challenge store items: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]domain.StoreItem, 0)
+	for rows.Next() {
+		var itemType, uniqueID, category, displayName string
+		var price int64
+		var sortOrder int
+		if err := rows.Scan(&itemType, &uniqueID, &category, &displayName, &price, &sortOrder); err != nil {
+			return nil, fmt.Errorf("scan challenge store item: %w", err)
+		}
+		_, icon := challengeCategory(itemType)
+		items = append(items, domain.StoreItem{
+			ID:              "challenge-" + itemType + "-" + uniqueID,
+			ExternalID:      uniqueID,
+			Currency:        "stardust",
+			Category:        category,
+			PurchaseBackend: "challenge-stardust",
+			Title:           displayName,
+			Description:     "来自 DB_CHALLENGE 商品目录；购买将使用独立的星尘商店流程。",
+			Price:           price,
+			Icon:            icon,
+			Tone:            "from-secondary to-violet-600",
+			Tag:             category,
+			Enabled:         true,
+			Sort:            sortOrder,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate challenge store items: %w", err)
 	}
 	return items, nil
 }
@@ -284,6 +435,27 @@ func (r *Repository) Account(ctx context.Context, steamID uint64) (domain.Accoun
 	if err != nil {
 		return domain.AccountOverview{}, fmt.Errorf("query player account: %w", err)
 	}
+	wallet := domain.Wallet{Starlight: starlight, StarlightAvailable: true}
+	if r.challengeDB != nil {
+		var challengeName string
+		err := r.challengeDB.QueryRowContext(ctx, `
+			SELECT PlayerName, StarDust
+			FROM starduststore_players
+			WHERE SteamID = ?
+			ORDER BY id DESC
+			LIMIT 1
+		`, steamID).Scan(&challengeName, &wallet.Stardust)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = nil
+		}
+		if err != nil {
+			return domain.AccountOverview{}, fmt.Errorf("query challenge player account: %w", err)
+		}
+		wallet.StardustAvailable = true
+		if name == "StarCS 玩家" && strings.TrimSpace(challengeName) != "" {
+			name = challengeName
+		}
+	}
 	return domain.AccountOverview{
 		Profile: domain.Profile{
 			UserID:         strconv.FormatUint(steamID, 10),
@@ -292,7 +464,7 @@ func (r *Repository) Account(ctx context.Context, steamID uint64) (domain.Accoun
 			PlayHours:      int(onlineTime / 3600),
 			SteamConnected: true,
 		},
-		Wallet:        domain.Wallet{Starlight: starlight, StarlightAvailable: true},
+		Wallet:        wallet,
 		ExchangeRates: []domain.ExchangeRate{},
 	}, nil
 }
@@ -449,6 +621,79 @@ func displayType(label string, productType int) (string, string) {
 	default:
 		return "物品", "gift"
 	}
+}
+
+func challengeCategory(itemType string) (string, string) {
+	switch strings.ToLower(strings.TrimSpace(itemType)) {
+	case "chatcolor":
+		return "聊天颜色", "sparkles"
+	case "namecolor":
+		return "名称颜色", "user-round"
+	case "chattag":
+		return "聊天称号", "trophy"
+	case "cheer":
+		return "欢呼语音", "gift"
+	case "death_voice":
+		return "死亡语音", "package"
+	case "grenade_voice":
+		return "投掷物语音", "zap"
+	case "hurt_voice":
+		return "受伤语音", "shield-check"
+	case "respawn_voice":
+		return "重生语音", "star"
+	case "playerskincard":
+		return "人物皮肤卡", "user-round"
+	case "directionalhammer":
+		return "定向强化核心", "zap"
+	default:
+		return "星尘物品", "gem"
+	}
+}
+
+func challengeItemTitle(itemType, uniqueID string) string {
+	category, _ := challengeCategory(itemType)
+	variant := strings.TrimSpace(uniqueID)
+	normalizedType := strings.ToLower(strings.TrimSpace(itemType))
+	normalizedVariant := strings.ToLower(variant)
+	for _, prefix := range []string{normalizedType, strings.ReplaceAll(normalizedType, "_", "")} {
+		if strings.HasPrefix(normalizedVariant, prefix) {
+			variant = variant[len(prefix):]
+			normalizedVariant = normalizedVariant[len(prefix):]
+			break
+		}
+	}
+	variant = strings.Trim(variant, "_- ")
+	if translated, ok := challengeVariantNames[strings.ToLower(variant)]; ok {
+		variant = translated
+	} else {
+		variant = strings.ReplaceAll(variant, "_", " ")
+	}
+	if variant == "" {
+		return category
+	}
+	return category + " · " + variant
+}
+
+var challengeVariantNames = map[string]string{
+	"blue":        "蓝色",
+	"bluegrey":    "蓝灰色",
+	"darkblue":    "深蓝色",
+	"darkred":     "深红色",
+	"gold":        "金色",
+	"green":       "绿色",
+	"grey":        "灰色",
+	"lightblue":   "浅蓝色",
+	"lightred":    "浅红色",
+	"lightyellow": "浅黄色",
+	"lime":        "青柠色",
+	"magenta":     "洋红色",
+	"olive":       "橄榄色",
+	"orange":      "橙色",
+	"purple":      "紫色",
+	"red":         "红色",
+	"silver":      "银色",
+	"white":       "白色",
+	"yellow":      "黄色",
 }
 
 func displayRarity(id int, name string) string {

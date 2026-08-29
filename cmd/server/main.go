@@ -46,6 +46,11 @@ func main() {
 		logger.Error("load database configuration", "error", err)
 		os.Exit(1)
 	}
+	challengeDSN, challengeConfigured, err := config.ChallengeDatabaseDSN()
+	if err != nil {
+		logger.Error("load challenge database configuration", "error", err)
+		os.Exit(1)
+	}
 	if !databaseConfigured {
 		logger.Warn("database is not configured; real login and inventory are unavailable")
 	} else {
@@ -53,6 +58,16 @@ func main() {
 		if err != nil {
 			logger.Error("connect inventory database", "error", err)
 			os.Exit(1)
+		}
+		if challengeConfigured {
+			if err := repository.ConnectChallenge(context.Background(), challengeDSN); err != nil {
+				logger.Error("connect challenge database", "error", err)
+				os.Exit(1)
+			}
+			logger.Info("challenge stardust database connected")
+			if !repository.ChallengeCatalogAvailable() {
+				logger.Warn("stardust catalog table is missing; apply migration and import StarDustStore.json before stardust items can be displayed")
+			}
 		}
 		defer repository.Close()
 		players = repository

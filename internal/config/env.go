@@ -93,6 +93,33 @@ func DatabaseDSN() (string, bool, error) {
 	return cfg.FormatDSN(), true, nil
 }
 
+// ChallengeDatabaseDSN returns the optional DB_CHALLENGE connection string.
+// The challenge store currently uses a separate database and read-only account.
+func ChallengeDatabaseDSN() (string, bool, error) {
+	return optionalTCPDSN("STAR_DB_CHALLENGE_DSN")
+}
+
+// ChallengeImportDSN is intentionally separate from the runtime read-only DSN.
+// The catalog importer requires INSERT/UPDATE permissions and never falls back.
+func ChallengeImportDSN() (string, bool, error) {
+	return optionalTCPDSN("STAR_DB_CHALLENGE_IMPORT_DSN")
+}
+
+func optionalTCPDSN(key string) (string, bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return "", false, nil
+	}
+	parsed, err := mysql.ParseDSN(raw)
+	if err != nil {
+		return "", false, fmt.Errorf("parse %s: %w", key, err)
+	}
+	if parsed.Net != "tcp" {
+		return "", false, fmt.Errorf("%s must use username:password@tcp(host:port)/database", key)
+	}
+	return parsed.FormatDSN(), true, nil
+}
+
 // SkipPasswordAuth enables the temporary Steam64-only read session mode.
 // It is disabled by default and must be explicitly enabled by configuration.
 func SkipPasswordAuth() (bool, error) {

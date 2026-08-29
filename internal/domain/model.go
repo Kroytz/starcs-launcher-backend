@@ -26,22 +26,27 @@ type ExchangeRate struct {
 }
 
 type StoreItem struct {
-	ID          string `json:"id"`
-	Currency    string `json:"currency"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Price       int64  `json:"price"`
-	Icon        string `json:"icon"`
-	Tone        string `json:"tone"`
-	Tag         string `json:"tag"`
-	Enabled     bool   `json:"enabled"`
-	Sort        int    `json:"sort"`
-	ImageURL    string `json:"imageUrl"`
+	ID              string `json:"id"`
+	ExternalID      string `json:"externalId"`
+	Currency        string `json:"currency"`
+	Category        string `json:"category"`
+	PurchaseBackend string `json:"purchaseBackend"`
+	Title           string `json:"title"`
+	Description     string `json:"description"`
+	Price           int64  `json:"price"`
+	Icon            string `json:"icon"`
+	Tone            string `json:"tone"`
+	Tag             string `json:"tag"`
+	Enabled         bool   `json:"enabled"`
+	Sort            int    `json:"sort"`
+	ImageURL        string `json:"imageUrl"`
 }
 
 type InventoryItem struct {
 	ProductID  int64  `json:"productId"`
 	ID         string `json:"id"`
+	Source     string `json:"source"`
+	UniqueID   string `json:"uniqueId"`
 	Name       string `json:"name"`
 	Type       string `json:"type"`
 	Rarity     string `json:"rarity"`

@@ -53,6 +53,36 @@ func TestDatabaseDSNHandlesAtInSeparatedPassword(t *testing.T) {
 	}
 }
 
+func TestChallengeDatabaseDSNIsOptional(t *testing.T) {
+	t.Setenv("STAR_DB_CHALLENGE_DSN", "")
+	if _, configured, err := ChallengeDatabaseDSN(); err != nil || configured {
+		t.Fatalf("expected optional challenge database to be disabled, configured=%v err=%v", configured, err)
+	}
+}
+
+func TestChallengeDatabaseDSNPreservesPassword(t *testing.T) {
+	t.Setenv("STAR_DB_CHALLENGE_DSN", "reader:pa@ss@tcp(mysql.example.com:3306)/db_challenge?parseTime=true")
+	dsn, configured, err := ChallengeDatabaseDSN()
+	if err != nil || !configured {
+		t.Fatalf("expected challenge database configuration, configured=%v err=%v", configured, err)
+	}
+	parsed, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("parse challenge DSN: %v", err)
+	}
+	if parsed.Passwd != "pa@ss" || parsed.DBName != "db_challenge" {
+		t.Fatal("challenge DSN did not preserve its credentials or database")
+	}
+}
+
+func TestChallengeImportDSNDoesNotFallBackToReadOnlyDSN(t *testing.T) {
+	t.Setenv("STAR_DB_CHALLENGE_DSN", "reader:secret@tcp(mysql.example.com:3306)/db_challenge")
+	t.Setenv("STAR_DB_CHALLENGE_IMPORT_DSN", "")
+	if _, configured, err := ChallengeImportDSN(); err != nil || configured {
+		t.Fatalf("importer must require an explicit write DSN, configured=%v err=%v", configured, err)
+	}
+}
+
 func TestLoadFileDoesNotOverrideProcessEnvironment(t *testing.T) {
 	const key = "STAR_TEST_ENV_OVERRIDE"
 	t.Setenv(key, "from-process")

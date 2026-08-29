@@ -23,3 +23,16 @@ func TestCollectionCountSupportsJSONAndDelimitedText(t *testing.T) {
 		}
 	}
 }
+
+func TestChallengeCategoryAndTitle(t *testing.T) {
+	category, icon := challengeCategory("chatcolor")
+	if category != "聊天颜色" || icon != "sparkles" {
+		t.Fatalf("unexpected challenge category: %q %q", category, icon)
+	}
+	if got := challengeItemTitle("chatcolor", "chatcolorblue"); got != "聊天颜色 · 蓝色" {
+		t.Fatalf("unexpected challenge title %q", got)
+	}
+	if got := challengeItemTitle("death_voice", "death_voice_2"); got != "死亡语音 · 2" {
+		t.Fatalf("unexpected challenge voice title %q", got)
+	}
+}

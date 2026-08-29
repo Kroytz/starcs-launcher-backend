@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS starduststore_catalog (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    item_type VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    unique_id VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    group_name VARCHAR(128) NOT NULL,
+    category_name VARCHAR(128) NOT NULL,
+    display_name VARCHAR(255) NOT NULL,
+    price INT UNSIGNED NOT NULL DEFAULT 0,
+    slot INT NOT NULL DEFAULT 0,
+    hidden TINYINT(1) NOT NULL DEFAULT 0,
+    purchasable TINYINT(1) NOT NULL DEFAULT 0,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    restricted_steam_id BIGINT UNSIGNED NULL,
+    config_json JSON NOT NULL,
+    sort_order INT UNSIGNED NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_starduststore_catalog_item (item_type, unique_id),
+    KEY idx_starduststore_catalog_shop (enabled, purchasable, hidden, category_name, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
