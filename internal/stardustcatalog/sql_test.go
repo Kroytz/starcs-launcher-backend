@@ -20,7 +20,7 @@ func TestWriteImportSQLUsesHexAndUpsert(t *testing.T) {
 	if strings.Contains(sql, "测试") || strings.Contains(sql, "quote'test") {
 		t.Fatal("user-controlled text should be emitted as UTF-8 hex")
 	}
-	for _, expected := range []string{"CREATE TABLE IF NOT EXISTS", "START TRANSACTION", "ON DUPLICATE KEY UPDATE", "COMMIT;"} {
+	for _, expected := range []string{"CREATE TABLE IF NOT EXISTS", "SET SQL_SAFE_UPDATES = 0", "START TRANSACTION", "ON DUPLICATE KEY UPDATE", "COMMIT;", "SET SQL_SAFE_UPDATES = @STARCS_OLD_SQL_SAFE_UPDATES"} {
 		if !strings.Contains(sql, expected) {
 			t.Fatalf("generated SQL is missing %q", expected)
 		}

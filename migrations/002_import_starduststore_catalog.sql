@@ -1,5 +1,7 @@
 -- Generated from StarDustStore.json. Re-running this file is idempotent.
 SET NAMES utf8mb4;
+SET @STARCS_OLD_SQL_SAFE_UPDATES = @@SQL_SAFE_UPDATES;
+SET SQL_SAFE_UPDATES = 0;
 CREATE TABLE IF NOT EXISTS starduststore_catalog (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     item_type VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
@@ -281,3 +283,4 @@ ON DUPLICATE KEY UPDATE
     restricted_steam_id = VALUES(restricted_steam_id), config_json = VALUES(config_json),
     sort_order = VALUES(sort_order);
 COMMIT;
+SET SQL_SAFE_UPDATES = @STARCS_OLD_SQL_SAFE_UPDATES;

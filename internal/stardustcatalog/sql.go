@@ -38,7 +38,7 @@ func WriteImportSQL(writer io.Writer, items []Item) error {
 	if _, err := fmt.Fprintln(buffer, "-- Generated from StarDustStore.json. Re-running this file is idempotent."); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(buffer, "SET NAMES utf8mb4;"); err != nil {
+	if _, err := fmt.Fprintln(buffer, "SET NAMES utf8mb4;\nSET @STARCS_OLD_SQL_SAFE_UPDATES = @@SQL_SAFE_UPDATES;\nSET SQL_SAFE_UPDATES = 0;"); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(buffer, catalogDDL); err != nil {
@@ -87,7 +87,7 @@ VALUES`); err != nil {
 			return err
 		}
 	}
-	if _, err := fmt.Fprintln(buffer, "COMMIT;"); err != nil {
+	if _, err := fmt.Fprintln(buffer, "COMMIT;\nSET SQL_SAFE_UPDATES = @STARCS_OLD_SQL_SAFE_UPDATES;"); err != nil {
 		return err
 	}
 	return buffer.Flush()
