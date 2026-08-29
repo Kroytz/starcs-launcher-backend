@@ -46,9 +46,12 @@ func NewStore() Store {
 				AvatarURL:      "https://www.starcs.cn/images/logo_64x64.png",
 			},
 			Wallet: domain.Wallet{
-				StarCoin:  128,
-				Starlight: 1260,
-				Stardust:  420,
+				StarCoin:           128,
+				Starlight:          1260,
+				Stardust:           420,
+				StarCoinAvailable:  true,
+				StarlightAvailable: true,
+				StardustAvailable:  true,
 			},
 			ExchangeRates: []domain.ExchangeRate{
 				{From: "starCoin", To: "starlight", Rate: 10},

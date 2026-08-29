@@ -40,6 +40,23 @@ func (fakePlayers) Inventory(_ context.Context, steamID uint64) ([]domain.Invent
 	return []domain.InventoryItem{{ProductID: 42, ID: "product-42", Name: "真实库存测试物品", Type: "物品", Rarity: "SR", Quantity: 1}}, nil
 }
 
+func (fakePlayers) Announcements(_ context.Context) ([]domain.Announcement, error) {
+	return []domain.Announcement{{ID: "real-announcement", Title: "真实公告"}}, nil
+}
+
+func (fakePlayers) StoreItems(_ context.Context) ([]domain.StoreItem, error) {
+	return []domain.StoreItem{{ID: "real-product", Currency: "starlight", Title: "真实商品", Enabled: true}}, nil
+}
+
+func (fakePlayers) Maps(_ context.Context) ([]domain.MapResource, error) {
+	return []domain.MapResource{{ID: 1, Name: "ze_test", WorkshopID: "123"}}, nil
+}
+
+func (repository fakePlayers) PlayerReadModel(ctx context.Context, steamID uint64) (domain.PlayerReadModel, error) {
+	inventory, err := repository.Inventory(ctx, steamID)
+	return domain.PlayerReadModel{Inventory: inventory}, err
+}
+
 func newAuthenticatedHandler() http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return api.NewHandler(demo.NewStore(), fakePlayers{}, logger, []string{"http://localhost:1420"})
@@ -161,5 +178,35 @@ func TestInventoryRequiresLogin(t *testing.T) {
 	newAuthenticatedHandler().ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status 401, got %d", response.Code)
+	}
+}
+
+func TestBootstrapUsesReadOnlyRepositoryData(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
+	response := httptest.NewRecorder()
+	newAuthenticatedHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", response.Code)
+	}
+	var body envelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	var data struct {
+		Announcements []domain.Announcement `json:"announcements"`
+		StoreItems    []domain.StoreItem    `json:"storeItems"`
+		Maps          []domain.MapResource  `json:"maps"`
+	}
+	if err := json.Unmarshal(body.Data, &data); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if len(data.Announcements) != 1 || data.Announcements[0].ID != "real-announcement" {
+		t.Fatalf("unexpected announcements: %+v", data.Announcements)
+	}
+	if len(data.StoreItems) != 1 || data.StoreItems[0].ID != "real-product" {
+		t.Fatalf("unexpected store items: %+v", data.StoreItems)
+	}
+	if len(data.Maps) != 1 || data.Maps[0].WorkshopID != "123" {
+		t.Fatalf("unexpected maps: %+v", data.Maps)
 	}
 }

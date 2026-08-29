@@ -11,9 +11,12 @@ type Announcement struct {
 }
 
 type Wallet struct {
-	StarCoin  int64 `json:"starCoin"`
-	Starlight int64 `json:"starlight"`
-	Stardust  int64 `json:"stardust"`
+	StarCoin           int64 `json:"starCoin"`
+	Starlight          int64 `json:"starlight"`
+	Stardust           int64 `json:"stardust"`
+	StarCoinAvailable  bool  `json:"starCoinAvailable"`
+	StarlightAvailable bool  `json:"starlightAvailable"`
+	StardustAvailable  bool  `json:"stardustAvailable"`
 }
 
 type ExchangeRate struct {
@@ -33,6 +36,7 @@ type StoreItem struct {
 	Tag         string `json:"tag"`
 	Enabled     bool   `json:"enabled"`
 	Sort        int    `json:"sort"`
+	ImageURL    string `json:"imageUrl"`
 }
 
 type InventoryItem struct {
@@ -59,6 +63,59 @@ type Profile struct {
 	AvatarURL      string `json:"avatarUrl"`
 }
 
+type MapResource struct {
+	ID          uint64 `json:"id"`
+	Name        string `json:"name"`
+	ShortName   string `json:"shortName"`
+	WorkshopID  string `json:"workshopId"`
+	Difficulty  string `json:"difficulty"`
+	Description string `json:"description"`
+}
+
+type PurchaseHistoryItem struct {
+	ID           uint64 `json:"id"`
+	ProductName  string `json:"productName"`
+	CurrencyType string `json:"currencyType"`
+	Quantity     uint64 `json:"quantity"`
+	Days         int    `json:"days"`
+	TotalPrice   int64  `json:"totalPrice"`
+	State        int    `json:"state"`
+	Description  string `json:"description"`
+	CreatedAt    string `json:"createdAt"`
+}
+
+type SeasonPassOverview struct {
+	Available             bool   `json:"available"`
+	SeasonID              int    `json:"seasonId"`
+	PassType              int    `json:"passType"`
+	Level                 int    `json:"level"`
+	Experience            int    `json:"experience"`
+	ClaimedRewardCount    int    `json:"claimedRewardCount"`
+	StarSourceChestOpened int    `json:"starSourceChestOpened"`
+	DailyGames            int    `json:"dailyGames"`
+	DailyOnlineMinutes    int    `json:"dailyOnlineMinutes"`
+	WeeklyGames           int    `json:"weeklyGames"`
+	WeeklyCompletedModes  int    `json:"weeklyCompletedModes"`
+	UpdatedAt             string `json:"updatedAt"`
+}
+
+type AccountPenalty struct {
+	Type      string `json:"type"`
+	Reason    string `json:"reason"`
+	Mode      string `json:"mode"`
+	Permanent bool   `json:"permanent"`
+	ExpiresAt string `json:"expiresAt"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type PlayerReadModel struct {
+	Account         AccountOverview       `json:"account"`
+	Inventory       []InventoryItem       `json:"inventory"`
+	PurchaseHistory []PurchaseHistoryItem `json:"purchaseHistory"`
+	SeasonPass      SeasonPassOverview    `json:"seasonPass"`
+	Penalties       []AccountPenalty      `json:"penalties"`
+}
+
 type AppConfig struct {
 	Name            string `json:"name"`
 	WebsiteURL      string `json:"websiteUrl"`
@@ -77,4 +134,5 @@ type Bootstrap struct {
 	Account       AccountOverview `json:"account"`
 	StoreItems    []StoreItem     `json:"storeItems"`
 	Inventory     []InventoryItem `json:"inventory"`
+	Maps          []MapResource   `json:"maps"`
 }

@@ -29,6 +29,10 @@ type envelope struct {
 type PlayerRepository interface {
 	Authenticate(ctx context.Context, steamID uint64, password string) error
 	Inventory(ctx context.Context, steamID uint64) ([]domain.InventoryItem, error)
+	Announcements(ctx context.Context) ([]domain.Announcement, error)
+	StoreItems(ctx context.Context) ([]domain.StoreItem, error)
+	Maps(ctx context.Context) ([]domain.MapResource, error)
+	PlayerReadModel(ctx context.Context, steamID uint64) (domain.PlayerReadModel, error)
 }
 
 type loginRequest struct {
@@ -37,9 +41,9 @@ type loginRequest struct {
 }
 
 type loginResponse struct {
-	Token     string                 `json:"token"`
-	ExpiresAt string                 `json:"expiresAt"`
-	Inventory []domain.InventoryItem `json:"inventory"`
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expiresAt"`
+	domain.PlayerReadModel
 }
 
 type session struct {
@@ -81,6 +85,7 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/api/v1/bootstrap", h.handleBootstrap)
 	mux.HandleFunc("/api/v1/announcements", h.handleAnnouncements)
 	mux.HandleFunc("/api/v1/store/items", h.handleStoreItems)
+	mux.HandleFunc("/api/v1/maps", h.handleMaps)
 	mux.HandleFunc("/api/v1/auth/login", h.handleLogin)
 	mux.HandleFunc("/api/v1/me", h.handleAccount)
 	mux.HandleFunc("/api/v1/me/inventory", h.handleInventory)
@@ -119,7 +124,28 @@ func (h *Handler) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	if !h.requireGET(w, r) {
 		return
 	}
-	h.writeSuccess(w, h.store.Bootstrap())
+	bootstrap := h.store.Bootstrap()
+	if h.players != nil {
+		announcements, err := h.players.Announcements(r.Context())
+		if err != nil {
+			h.writeRepositoryError(w, "query announcements", err)
+			return
+		}
+		storeItems, err := h.players.StoreItems(r.Context())
+		if err != nil {
+			h.writeRepositoryError(w, "query store items", err)
+			return
+		}
+		maps, err := h.players.Maps(r.Context())
+		if err != nil {
+			h.writeRepositoryError(w, "query maps", err)
+			return
+		}
+		bootstrap.Announcements = announcements
+		bootstrap.StoreItems = storeItems
+		bootstrap.Maps = maps
+	}
+	h.writeSuccess(w, bootstrap)
 }
 
 func (h *Handler) handleAnnouncements(w http.ResponseWriter, r *http.Request) {
@@ -139,7 +165,38 @@ func (h *Handler) handleStoreItems(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, 4001, "currency 仅支持 starlight 或 stardust")
 		return
 	}
-	h.writeSuccess(w, h.store.StoreItems(currency))
+	if h.players == nil {
+		h.writeSuccess(w, h.store.StoreItems(currency))
+		return
+	}
+	items, err := h.players.StoreItems(r.Context())
+	if err != nil {
+		h.writeRepositoryError(w, "query store items", err)
+		return
+	}
+	filtered := items[:0]
+	for _, item := range items {
+		if currency == "" || item.Currency == currency {
+			filtered = append(filtered, item)
+		}
+	}
+	h.writeSuccess(w, filtered)
+}
+
+func (h *Handler) handleMaps(w http.ResponseWriter, r *http.Request) {
+	if !h.requireGET(w, r) {
+		return
+	}
+	if h.players == nil {
+		h.writeSuccess(w, []domain.MapResource{})
+		return
+	}
+	maps, err := h.players.Maps(r.Context())
+	if err != nil {
+		h.writeRepositoryError(w, "query maps", err)
+		return
+	}
+	h.writeSuccess(w, maps)
 }
 
 func (h *Handler) handleAccount(w http.ResponseWriter, r *http.Request) {
@@ -200,10 +257,10 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusServiceUnavailable, 5002, "账号数据库暂时不可用")
 		return
 	}
-	items, err := h.players.Inventory(r.Context(), steamID)
+	readModel, err := h.players.PlayerReadModel(r.Context(), steamID)
 	if err != nil {
-		h.logger.Error("query inventory after login", "error", err)
-		h.writeError(w, http.StatusInternalServerError, 5001, "读取真实库存失败")
+		h.logger.Error("query player read model after login", "error", err)
+		h.writeError(w, http.StatusInternalServerError, 5001, "读取真实玩家数据失败")
 		return
 	}
 
@@ -217,7 +274,12 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	h.sessionMu.Lock()
 	h.sessions[token] = session{steamID: steamID, expiresAt: expiresAt}
 	h.sessionMu.Unlock()
-	h.writeSuccess(w, loginResponse{Token: token, ExpiresAt: expiresAt.UTC().Format(time.RFC3339), Inventory: items})
+	h.writeSuccess(w, loginResponse{Token: token, ExpiresAt: expiresAt.UTC().Format(time.RFC3339), PlayerReadModel: readModel})
+}
+
+func (h *Handler) writeRepositoryError(w http.ResponseWriter, operation string, err error) {
+	h.logger.Error(operation, "error", err)
+	h.writeError(w, http.StatusServiceUnavailable, 5002, "只读数据服务暂时不可用")
 }
 
 func (h *Handler) requireSession(w http.ResponseWriter, r *http.Request) (uint64, bool) {
