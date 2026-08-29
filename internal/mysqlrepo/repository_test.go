@@ -19,6 +19,16 @@ func TestAnnouncementPayloadPreservesValidJSONAndRejectsInvalidInput(t *testing.
 	}
 }
 
+func TestPublicFileURLUsesStaticAssetHost(t *testing.T) {
+	if got := publicFileURL("/images/announcement/detail.png"); got != "https://static.starcs.cn/images/announcement/detail.png" {
+		t.Fatalf("unexpected public file URL %q", got)
+	}
+	absolute := "https://cdn.example.com/detail.png"
+	if got := publicFileURL(absolute); got != absolute {
+		t.Fatalf("absolute URL should be preserved, got %q", got)
+	}
+}
+
 func TestCollectionCountSupportsJSONAndDelimitedText(t *testing.T) {
 	tests := map[string]int{
 		`[]`:          0,

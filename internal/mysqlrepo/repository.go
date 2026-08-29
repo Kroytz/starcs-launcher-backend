@@ -224,12 +224,15 @@ func (r *Repository) challengeInventory(ctx context.Context, steamID uint64) ([]
 
 func (r *Repository) Announcements(ctx context.Context) ([]domain.Announcement, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, title, render_payload, type, published_at, created
-		FROM scs_announcement
-		WHERE status = 1
-		  AND (start_at IS NULL OR start_at <= NOW())
-		  AND (end_at IS NULL OR end_at >= NOW())
-		ORDER BY is_pinned DESC, priority DESC, published_at DESC, id DESC
+		SELECT a.id, a.title, a.render_payload, a.type, a.published_at, a.created,
+		       COALESCE(cover.relative_path, ''), COALESCE(detail.relative_path, '')
+		FROM scs_announcement AS a
+		LEFT JOIN scs_file AS cover ON cover.id = a.cover_image_id
+		LEFT JOIN scs_file AS detail ON detail.id = a.detail_image_id
+		WHERE a.status = 1
+		  AND (a.start_at IS NULL OR a.start_at <= NOW())
+		  AND (a.end_at IS NULL OR a.end_at >= NOW())
+		ORDER BY a.is_pinned DESC, a.priority DESC, a.published_at DESC, a.id DESC
 		LIMIT 20
 	`)
 	if err != nil {
@@ -244,7 +247,9 @@ func (r *Repository) Announcements(ctx context.Context) ([]domain.Announcement, 
 		var announcementType int
 		var published sql.NullTime
 		var created time.Time
-		if err := rows.Scan(&id, &title, &payload, &announcementType, &published, &created); err != nil {
+		var coverPath string
+		var detailPath string
+		if err := rows.Scan(&id, &title, &payload, &announcementType, &published, &created, &coverPath, &detailPath); err != nil {
 			return nil, fmt.Errorf("scan announcement: %w", err)
 		}
 		publishedAt := created
@@ -256,14 +261,16 @@ func (r *Repository) Announcements(ctx context.Context) ([]domain.Announcement, 
 			return nil, fmt.Errorf("resolve announcement %d payload: %w", id, err)
 		}
 		items = append(items, domain.Announcement{
-			ID:            strconv.FormatUint(id, 10),
-			Title:         title,
-			Content:       announcementSummary(payload.String),
-			Level:         map[bool]string{true: "event", false: "info"}[announcementType == 1],
-			Dismissible:   true,
-			DisplayDate:   publishedAt.Format("01 / 02"),
-			PublishedAt:   publishedAt.Format(time.RFC3339),
-			RenderPayload: renderPayload,
+			ID:             strconv.FormatUint(id, 10),
+			Title:          title,
+			Content:        announcementSummary(payload.String),
+			Level:          map[bool]string{true: "event", false: "info"}[announcementType == 1],
+			Dismissible:    true,
+			DisplayDate:    publishedAt.Format("01 / 02"),
+			PublishedAt:    publishedAt.Format(time.RFC3339),
+			CoverImageURL:  publicFileURL(coverPath),
+			DetailImageURL: publicFileURL(detailPath),
+			RenderPayload:  renderPayload,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -641,7 +648,7 @@ func publicFileURL(relativePath string) string {
 	if strings.HasPrefix(relativePath, "http://") || strings.HasPrefix(relativePath, "https://") {
 		return relativePath
 	}
-	return "https://www.starcs.cn/" + strings.TrimLeft(relativePath, "/")
+	return "https://static.starcs.cn/" + strings.TrimLeft(relativePath, "/")
 }
 
 func collectionCount(raw string) int {

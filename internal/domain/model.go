@@ -3,14 +3,16 @@ package domain
 import "encoding/json"
 
 type Announcement struct {
-	ID            string          `json:"id"`
-	Title         string          `json:"title"`
-	Content       string          `json:"content"`
-	Level         string          `json:"level"`
-	Dismissible   bool            `json:"dismissible"`
-	DisplayDate   string          `json:"displayDate"`
-	PublishedAt   string          `json:"publishedAt"`
-	RenderPayload json.RawMessage `json:"renderPayload"`
+	ID             string          `json:"id"`
+	Title          string          `json:"title"`
+	Content        string          `json:"content"`
+	Level          string          `json:"level"`
+	Dismissible    bool            `json:"dismissible"`
+	DisplayDate    string          `json:"displayDate"`
+	PublishedAt    string          `json:"publishedAt"`
+	CoverImageURL  string          `json:"coverImageUrl"`
+	DetailImageURL string          `json:"detailImageUrl"`
+	RenderPayload  json.RawMessage `json:"renderPayload"`
 }
 
 type Wallet struct {
