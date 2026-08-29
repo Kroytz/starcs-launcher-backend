@@ -19,6 +19,7 @@ import (
 func main() {
 	filePath := flag.String("file", "StarDustStore.json", "path to StarDustStore.json")
 	dryRun := flag.Bool("dry-run", false, "validate and summarize without connecting to MySQL")
+	sqlOutput := flag.String("sql-out", "", "write a self-contained import SQL file and exit")
 	flag.Parse()
 
 	items, err := stardustcatalog.Load(*filePath)
@@ -26,6 +27,21 @@ func main() {
 		log.Fatal(err)
 	}
 	printSummary(items)
+	if *sqlOutput != "" {
+		file, err := os.Create(*sqlOutput)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := stardustcatalog.WriteImportSQL(file, items); err != nil {
+			_ = file.Close()
+			log.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("wrote import SQL to %s\n", *sqlOutput)
+		return
+	}
 	if *dryRun {
 		return
 	}

@@ -41,6 +41,7 @@ Get-Content -Raw .\migrations\001_starduststore_catalog.sql | mysql --default-ch
 ```powershell
 $env:STAR_DB_CHALLENGE_IMPORT_DSN = "challenge_writer:密码@tcp(主机:3306)/db_challenge?parseTime=true"
 go run -buildvcs=false ./cmd/import_stardust_catalog -file E:\Downloads\StarDustStore.json -dry-run
+go run -buildvcs=false ./cmd/import_stardust_catalog -file E:\Downloads\StarDustStore.json -sql-out .\migrations\002_import_starduststore_catalog.sql
 go run -buildvcs=false ./cmd/import_stardust_catalog -file E:\Downloads\StarDustStore.json
 ```
 
