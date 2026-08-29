@@ -1,0 +1,7 @@
+.env
+.idea/
+STRUCT_db_star.xls
+bin/
+coverage.out
+*.exe
+*.test

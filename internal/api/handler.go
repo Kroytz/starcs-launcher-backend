@@ -1,0 +1,332 @@
+package api
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/starcs/star-launcher-backend/internal/demo"
+	"github.com/starcs/star-launcher-backend/internal/domain"
+	"github.com/starcs/star-launcher-backend/internal/mysqlrepo"
+)
+
+const successCode = 2000
+
+type envelope struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data any    `json:"data"`
+}
+
+type PlayerRepository interface {
+	Authenticate(ctx context.Context, steamID uint64, password string) error
+	Inventory(ctx context.Context, steamID uint64) ([]domain.InventoryItem, error)
+}
+
+type loginRequest struct {
+	SteamID  string `json:"steamId"`
+	Password string `json:"password"`
+}
+
+type loginResponse struct {
+	Token     string                 `json:"token"`
+	ExpiresAt string                 `json:"expiresAt"`
+	Inventory []domain.InventoryItem `json:"inventory"`
+}
+
+type session struct {
+	steamID   uint64
+	expiresAt time.Time
+}
+
+type Handler struct {
+	store          demo.Store
+	players        PlayerRepository
+	logger         *slog.Logger
+	allowedOrigins map[string]struct{}
+	sessionMu      sync.Mutex
+	sessions       map[string]session
+}
+
+func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger, allowedOrigins []string) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	h := &Handler{
+		store:          store,
+		players:        players,
+		logger:         logger,
+		allowedOrigins: make(map[string]struct{}, len(allowedOrigins)),
+		sessions:       make(map[string]session),
+	}
+	for _, origin := range allowedOrigins {
+		origin = strings.TrimSpace(origin)
+		if origin != "" {
+			h.allowedOrigins[origin] = struct{}{}
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", h.handleIndex)
+	mux.HandleFunc("/healthz", h.handleHealth)
+	mux.HandleFunc("/api/v1/bootstrap", h.handleBootstrap)
+	mux.HandleFunc("/api/v1/announcements", h.handleAnnouncements)
+	mux.HandleFunc("/api/v1/store/items", h.handleStoreItems)
+	mux.HandleFunc("/api/v1/auth/login", h.handleLogin)
+	mux.HandleFunc("/api/v1/me", h.handleAccount)
+	mux.HandleFunc("/api/v1/me/inventory", h.handleInventory)
+
+	return h.withLogging(h.withCORS(mux))
+}
+
+func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		h.writeError(w, http.StatusNotFound, 4004, "接口不存在")
+		return
+	}
+	if !h.requireGET(w, r) {
+		return
+	}
+
+	h.writeSuccess(w, map[string]any{
+		"service":   "star-launcher-backend",
+		"version":   "0.1.0",
+		"health":    "/healthz",
+		"bootstrap": "/api/v1/bootstrap",
+	})
+}
+
+func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if !h.requireGET(w, r) {
+		return
+	}
+	h.writeSuccess(w, map[string]any{
+		"status": "ok",
+		"time":   time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (h *Handler) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	if !h.requireGET(w, r) {
+		return
+	}
+	h.writeSuccess(w, h.store.Bootstrap())
+}
+
+func (h *Handler) handleAnnouncements(w http.ResponseWriter, r *http.Request) {
+	if !h.requireGET(w, r) {
+		return
+	}
+	h.writeSuccess(w, h.store.Announcements())
+}
+
+func (h *Handler) handleStoreItems(w http.ResponseWriter, r *http.Request) {
+	if !h.requireGET(w, r) {
+		return
+	}
+
+	currency := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("currency")))
+	if currency != "" && currency != "starlight" && currency != "stardust" {
+		h.writeError(w, http.StatusBadRequest, 4001, "currency 仅支持 starlight 或 stardust")
+		return
+	}
+	h.writeSuccess(w, h.store.StoreItems(currency))
+}
+
+func (h *Handler) handleAccount(w http.ResponseWriter, r *http.Request) {
+	if !h.requireGET(w, r) {
+		return
+	}
+	h.writeSuccess(w, h.store.Account())
+}
+
+func (h *Handler) handleInventory(w http.ResponseWriter, r *http.Request) {
+	if !h.requireGET(w, r) {
+		return
+	}
+	steamID, ok := h.requireSession(w, r)
+	if !ok {
+		return
+	}
+	items, err := h.players.Inventory(r.Context(), steamID)
+	if err != nil {
+		h.logger.Error("query player inventory", "error", err)
+		h.writeError(w, http.StatusInternalServerError, 5001, "读取真实库存失败")
+		return
+	}
+	h.writeSuccess(w, items)
+}
+
+func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		h.writeError(w, http.StatusMethodNotAllowed, 4005, "请求方法不支持")
+		return
+	}
+	if h.players == nil {
+		h.writeError(w, http.StatusServiceUnavailable, 5003, "真实库存数据库尚未配置")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var request loginRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		h.writeError(w, http.StatusBadRequest, 4001, "登录请求格式无效")
+		return
+	}
+	steamID, err := parseSteamID(request.SteamID)
+	if err != nil || strings.TrimSpace(request.Password) == "" {
+		h.writeError(w, http.StatusBadRequest, 4001, "Steam64 或密码格式无效")
+		return
+	}
+
+	if err := h.players.Authenticate(r.Context(), steamID, request.Password); err != nil {
+		if errors.Is(err, mysqlrepo.ErrInvalidCredentials) {
+			h.writeError(w, http.StatusUnauthorized, 4003, "Steam64 或游戏内密码错误")
+			return
+		}
+		h.logger.Error("authenticate player", "error", err)
+		h.writeError(w, http.StatusServiceUnavailable, 5002, "账号数据库暂时不可用")
+		return
+	}
+	items, err := h.players.Inventory(r.Context(), steamID)
+	if err != nil {
+		h.logger.Error("query inventory after login", "error", err)
+		h.writeError(w, http.StatusInternalServerError, 5001, "读取真实库存失败")
+		return
+	}
+
+	token, err := newSessionToken()
+	if err != nil {
+		h.logger.Error("create login session", "error", err)
+		h.writeError(w, http.StatusInternalServerError, 5000, "创建登录会话失败")
+		return
+	}
+	expiresAt := time.Now().Add(24 * time.Hour)
+	h.sessionMu.Lock()
+	h.sessions[token] = session{steamID: steamID, expiresAt: expiresAt}
+	h.sessionMu.Unlock()
+	h.writeSuccess(w, loginResponse{Token: token, ExpiresAt: expiresAt.UTC().Format(time.RFC3339), Inventory: items})
+}
+
+func (h *Handler) requireSession(w http.ResponseWriter, r *http.Request) (uint64, bool) {
+	if h.players == nil {
+		h.writeError(w, http.StatusServiceUnavailable, 5003, "真实库存数据库尚未配置")
+		return 0, false
+	}
+	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	const prefix = "Bearer "
+	if !strings.HasPrefix(authorization, prefix) {
+		h.writeError(w, http.StatusUnauthorized, 4003, "请先登录")
+		return 0, false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(authorization, prefix))
+	h.sessionMu.Lock()
+	current, exists := h.sessions[token]
+	if exists && time.Now().After(current.expiresAt) {
+		delete(h.sessions, token)
+		exists = false
+	}
+	h.sessionMu.Unlock()
+	if !exists {
+		h.writeError(w, http.StatusUnauthorized, 4003, "登录会话无效或已过期")
+		return 0, false
+	}
+	return current.steamID, true
+}
+
+func parseSteamID(value string) (uint64, error) {
+	value = strings.TrimSpace(value)
+	if len(value) != 17 || !strings.HasPrefix(value, "7656119") {
+		return 0, errors.New("invalid Steam64")
+	}
+	return strconv.ParseUint(value, 10, 64)
+}
+
+func newSessionToken() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(bytes), nil
+}
+
+func (h *Handler) requireGET(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return true
+	}
+	w.Header().Set("Allow", http.MethodGet)
+	h.writeError(w, http.StatusMethodNotAllowed, 4005, "请求方法不支持")
+	return false
+}
+
+func (h *Handler) writeSuccess(w http.ResponseWriter, data any) {
+	h.writeJSON(w, http.StatusOK, envelope{Code: successCode, Msg: "success", Data: data})
+}
+
+func (h *Handler) writeError(w http.ResponseWriter, status, code int, message string) {
+	h.writeJSON(w, status, envelope{Code: code, Msg: message, Data: nil})
+}
+
+func (h *Handler) writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		h.logger.Error("write json response", "error", err)
+	}
+}
+
+func (h *Handler) withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if _, ok := h.allowedOrigins[origin]; ok {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (h *Handler) withLogging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		wrapped := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(wrapped, r)
+		h.logger.Info("http request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", wrapped.status,
+			"duration", time.Since(started),
+		)
+	})
+}
