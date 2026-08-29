@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -90,6 +91,20 @@ func DatabaseDSN() (string, bool, error) {
 	cfg.WriteTimeout = 8 * time.Second
 	cfg.Params = map[string]string{"charset": "utf8mb4"}
 	return cfg.FormatDSN(), true, nil
+}
+
+// SkipPasswordAuth enables the temporary Steam64-only read session mode.
+// It is disabled by default and must be explicitly enabled by configuration.
+func SkipPasswordAuth() (bool, error) {
+	raw := strings.TrimSpace(os.Getenv("STAR_SKIP_PASSWORD_AUTH"))
+	if raw == "" {
+		return false, nil
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("parse STAR_SKIP_PASSWORD_AUTH: %w", err)
+	}
+	return enabled, nil
 }
 
 func loadFile(path string) error {

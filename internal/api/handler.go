@@ -52,25 +52,27 @@ type session struct {
 }
 
 type Handler struct {
-	store          demo.Store
-	players        PlayerRepository
-	logger         *slog.Logger
-	allowedOrigins map[string]struct{}
-	sessionMu      sync.Mutex
-	sessions       map[string]session
+	store            demo.Store
+	players          PlayerRepository
+	logger           *slog.Logger
+	allowedOrigins   map[string]struct{}
+	skipPasswordAuth bool
+	sessionMu        sync.Mutex
+	sessions         map[string]session
 }
 
-func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger, allowedOrigins []string) http.Handler {
+func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger, allowedOrigins []string, skipPasswordAuth bool) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
 	h := &Handler{
-		store:          store,
-		players:        players,
-		logger:         logger,
-		allowedOrigins: make(map[string]struct{}, len(allowedOrigins)),
-		sessions:       make(map[string]session),
+		store:            store,
+		players:          players,
+		logger:           logger,
+		allowedOrigins:   make(map[string]struct{}, len(allowedOrigins)),
+		skipPasswordAuth: skipPasswordAuth,
+		sessions:         make(map[string]session),
 	}
 	for _, origin := range allowedOrigins {
 		origin = strings.TrimSpace(origin)
@@ -243,19 +245,21 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	steamID, err := parseSteamID(request.SteamID)
-	if err != nil || strings.TrimSpace(request.Password) == "" {
+	if err != nil || (!h.skipPasswordAuth && strings.TrimSpace(request.Password) == "") {
 		h.writeError(w, http.StatusBadRequest, 4001, "Steam64 或密码格式无效")
 		return
 	}
 
-	if err := h.players.Authenticate(r.Context(), steamID, request.Password); err != nil {
-		if errors.Is(err, mysqlrepo.ErrInvalidCredentials) {
-			h.writeError(w, http.StatusUnauthorized, 4003, "Steam64 或游戏内密码错误")
+	if !h.skipPasswordAuth {
+		if err := h.players.Authenticate(r.Context(), steamID, request.Password); err != nil {
+			if errors.Is(err, mysqlrepo.ErrInvalidCredentials) {
+				h.writeError(w, http.StatusUnauthorized, 4003, "Steam64 或游戏内密码错误")
+				return
+			}
+			h.logger.Error("authenticate player", "error", err)
+			h.writeError(w, http.StatusServiceUnavailable, 5002, "账号数据库暂时不可用")
 			return
 		}
-		h.logger.Error("authenticate player", "error", err)
-		h.writeError(w, http.StatusServiceUnavailable, 5002, "账号数据库暂时不可用")
-		return
 	}
 	readModel, err := h.players.PlayerReadModel(r.Context(), steamID)
 	if err != nil {

@@ -24,7 +24,7 @@ type envelope struct {
 
 func newHandler() http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return api.NewHandler(demo.NewStore(), nil, logger, []string{"http://localhost:1420"})
+	return api.NewHandler(demo.NewStore(), nil, logger, []string{"http://localhost:1420"}, false)
 }
 
 type fakePlayers struct{}
@@ -59,7 +59,12 @@ func (repository fakePlayers) PlayerReadModel(ctx context.Context, steamID uint6
 
 func newAuthenticatedHandler() http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return api.NewHandler(demo.NewStore(), fakePlayers{}, logger, []string{"http://localhost:1420"})
+	return api.NewHandler(demo.NewStore(), fakePlayers{}, logger, []string{"http://localhost:1420"}, false)
+}
+
+func newPasswordlessHandler() http.Handler {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return api.NewHandler(demo.NewStore(), fakePlayers{}, logger, []string{"http://localhost:1420"}, true)
 }
 
 func TestBootstrap(t *testing.T) {
@@ -169,6 +174,28 @@ func TestLoginReturnsAuthenticatedInventory(t *testing.T) {
 	handler.ServeHTTP(inventoryResponse, inventoryRequest)
 	if inventoryResponse.Code != http.StatusOK {
 		t.Fatalf("expected inventory status 200, got %d", inventoryResponse.Code)
+	}
+}
+
+func TestLoginAllowsSteamIDOnlyWhenPasswordAuthIsDisabled(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"steamId":"76561198000000001"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	newPasswordlessHandler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestLoginStillRequiresPasswordByDefault(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"steamId":"76561198000000001"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	newAuthenticatedHandler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", response.Code, response.Body.String())
 	}
 }
 

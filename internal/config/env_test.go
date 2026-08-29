@@ -67,3 +67,30 @@ func TestLoadFileDoesNotOverrideProcessEnvironment(t *testing.T) {
 		t.Fatalf("expected process environment to win, got %q", got)
 	}
 }
+
+func TestSkipPasswordAuthDefaultsToDisabled(t *testing.T) {
+	t.Setenv("STAR_SKIP_PASSWORD_AUTH", "")
+	enabled, err := SkipPasswordAuth()
+	if err != nil {
+		t.Fatalf("read password auth setting: %v", err)
+	}
+	if enabled {
+		t.Fatal("password auth bypass must be disabled by default")
+	}
+}
+
+func TestSkipPasswordAuthRequiresExplicitBoolean(t *testing.T) {
+	t.Setenv("STAR_SKIP_PASSWORD_AUTH", "true")
+	enabled, err := SkipPasswordAuth()
+	if err != nil {
+		t.Fatalf("read password auth setting: %v", err)
+	}
+	if !enabled {
+		t.Fatal("expected password auth bypass to be enabled")
+	}
+
+	t.Setenv("STAR_SKIP_PASSWORD_AUTH", "sometimes")
+	if _, err := SkipPasswordAuth(); err == nil {
+		t.Fatal("invalid boolean setting should fail startup")
+	}
+}

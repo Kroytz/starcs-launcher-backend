@@ -18,6 +18,7 @@ go run ./cmd/server
 ```powershell
 $env:STAR_BACKEND_ADDR = ":8080"
 $env:STAR_CORS_ORIGINS = "http://localhost:1420,http://tauri.localhost,https://tauri.localhost,tauri://localhost"
+$env:STAR_SKIP_PASSWORD_AUTH = "true" # 只读开发期临时跳过游戏内密码校验
 $env:STAR_DB_USER = "数据库用户"
 $env:STAR_DB_PASSWORD = "数据库密码"
 $env:STAR_DB_HOST = "mysql.example.com"
@@ -68,6 +69,7 @@ Invoke-RestMethod -Headers @{ Authorization = "Bearer $($login.data.token)" } ht
 
 - 真实库存联表为 `sls_player_inventory`、`sls_product` 与 `sls_product_rarity`。
 - 登录校验使用 `scs_user` 与 `scs_user_steamid`，当前按数据库现有明文密码字段比较；若线上使用了额外哈希规则，需要同步对应算法。
+- `STAR_SKIP_PASSWORD_AUTH=true` 时仅校验 Steam64 格式并签发 24 小时只读会话；默认关闭，不能直接用于公开生产环境。
 - 登录会话保存在后端内存中，有效期 24 小时；服务重启后需要重新登录。
 - `/api/v1/me`、公告、钱包和商城商品目前仍是展示数据。
 - 充值、兑换和购买暂时没有写接口，避免演示阶段产生伪交易语义。

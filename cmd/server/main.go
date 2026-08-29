@@ -31,6 +31,14 @@ func main() {
 	}
 	addr := envOrDefault("STAR_BACKEND_ADDR", ":8080")
 	origins := strings.Split(envOrDefault("STAR_CORS_ORIGINS", defaultOrigins), ",")
+	skipPasswordAuth, err := config.SkipPasswordAuth()
+	if err != nil {
+		logger.Error("load authentication configuration", "error", err)
+		os.Exit(1)
+	}
+	if skipPasswordAuth {
+		logger.Warn("game password validation is disabled; Steam64-only read sessions are enabled")
+	}
 
 	var players api.PlayerRepository
 	dsn, databaseConfigured, err := config.DatabaseDSN()
@@ -53,7 +61,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.NewHandler(demo.NewStore(), players, logger, origins),
+		Handler:           api.NewHandler(demo.NewStore(), players, logger, origins, skipPasswordAuth),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
