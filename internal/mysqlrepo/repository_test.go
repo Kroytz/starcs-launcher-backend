@@ -53,6 +53,18 @@ func TestDisplayTypeMapsItemCardsAndCharacters(t *testing.T) {
 	}
 }
 
+func TestAfdianStoreMetadata(t *testing.T) {
+	if got := afdianPurchaseURL(" 530b6328383811efab485254001e7c00 "); got != "https://www.ifdian.net/item/530b6328383811efab485254001e7c00" {
+		t.Fatalf("unexpected afdian purchase URL %q", got)
+	}
+	if category, icon := afdianCategory("vip,svip", 0); category != "会员" || icon != "star" {
+		t.Fatalf("unexpected afdian category: %q %q", category, icon)
+	}
+	if category, _ := afdianCategory("", 1); category != "道具卡" {
+		t.Fatalf("unexpected prefab category %q", category)
+	}
+}
+
 func TestChallengeCategoryAndTitle(t *testing.T) {
 	category, icon := challengeCategory("chatcolor")
 	if category != "聊天颜色" || icon != "sparkles" {

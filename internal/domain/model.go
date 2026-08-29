@@ -36,6 +36,7 @@ type StoreItem struct {
 	Currency        string `json:"currency"`
 	Category        string `json:"category"`
 	PurchaseBackend string `json:"purchaseBackend"`
+	PurchaseURL     string `json:"purchaseUrl"`
 	Title           string `json:"title"`
 	Description     string `json:"description"`
 	Price           int64  `json:"price"`

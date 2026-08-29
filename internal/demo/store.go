@@ -59,6 +59,7 @@ func NewStore() Store {
 			},
 		},
 		storeItems: []domain.StoreItem{
+			{ID: "afdian-vip", ExternalID: "demo-plan", Currency: "afdian", Category: "会员", PurchaseBackend: "afdian-cdk", PurchaseURL: "https://www.ifdian.net/item/demo-plan", Title: "VIP/月", Description: "1个月的VIP", Price: 49, Icon: "star", Tone: "from-pink-500 to-rose-600", Tag: "会员", Enabled: true, Sort: 1},
 			{ID: "starlight-pass", Currency: "starlight", Title: "STAR 高级通行证", Description: "解锁赛季任务与专属奖励路线", Price: 680, Icon: "trophy", Tone: "from-primary to-secondary", Tag: "热门", Enabled: true, Sort: 10},
 			{ID: "starlight-membership", Currency: "starlight", Title: "会员月卡", Description: "专属队列、经验加成与社区徽章", Price: 420, Icon: "star", Tone: "from-cyan-500 to-primary", Tag: "推荐", Enabled: true, Sort: 20},
 			{ID: "starlight-name-card", Currency: "starlight", Title: "昵称炫彩卡", Description: "解锁一张可自定义的昵称渐变卡", Price: 180, Icon: "sparkles", Tone: "from-violet-500 to-fuchsia-500", Tag: "装饰", Enabled: true, Sort: 30},

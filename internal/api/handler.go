@@ -163,8 +163,8 @@ func (h *Handler) handleStoreItems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	currency := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("currency")))
-	if currency != "" && currency != "starlight" && currency != "stardust" {
-		h.writeError(w, http.StatusBadRequest, 4001, "currency 仅支持 starlight 或 stardust")
+	if currency != "" && currency != "starlight" && currency != "stardust" && currency != "afdian" {
+		h.writeError(w, http.StatusBadRequest, 4001, "currency 仅支持 starlight、stardust 或 afdian")
 		return
 	}
 	if h.players == nil {

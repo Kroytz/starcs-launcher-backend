@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -332,12 +333,63 @@ func (r *Repository) StoreItems(ctx context.Context) ([]domain.StoreItem, error)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate store items: %w", err)
 	}
+	afdianItems, err := r.afdianStoreItems(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items = append(items, afdianItems...)
 	if r.challengeDB != nil && r.challengeCatalogAvailable {
 		challengeItems, err := r.challengeStoreItems(ctx)
 		if err != nil {
 			return nil, err
 		}
 		items = append(items, challengeItems...)
+	}
+	return items, nil
+}
+
+func (r *Repository) afdianStoreItems(ctx context.Context) ([]domain.StoreItem, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT p.id, p.afdian_plan_id, p.name, p.prefab_type, COALESCE(p.desc, ''),
+		       COALESCE(p.label, ''), p.price
+		FROM afdian_cdk_product AS p
+		WHERE p.state = 1 AND TRIM(p.afdian_plan_id) <> ''
+		ORDER BY p.id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query afdian store items: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]domain.StoreItem, 0)
+	for rows.Next() {
+		var id int64
+		var planID, name, description, label string
+		var prefabType int
+		var price int64
+		if err := rows.Scan(&id, &planID, &name, &prefabType, &description, &label, &price); err != nil {
+			return nil, fmt.Errorf("scan afdian store item: %w", err)
+		}
+		category, icon := afdianCategory(label, prefabType)
+		items = append(items, domain.StoreItem{
+			ID:              fmt.Sprintf("afdian-%d", id),
+			ExternalID:      strings.TrimSpace(planID),
+			Currency:        "afdian",
+			Category:        category,
+			PurchaseBackend: "afdian-cdk",
+			PurchaseURL:     afdianPurchaseURL(planID),
+			Title:           name,
+			Description:     description,
+			Price:           price,
+			Icon:            icon,
+			Tone:            "from-pink-500 to-rose-600",
+			Tag:             category,
+			Enabled:         true,
+			Sort:            int(id),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate afdian store items: %w", err)
 	}
 	return items, nil
 }
@@ -684,6 +736,32 @@ func displayType(label string, productType int) (string, string) {
 	default:
 		return "物品", "gift"
 	}
+}
+
+func afdianCategory(label string, prefabType int) (string, string) {
+	normalized := strings.ToLower(label)
+	switch {
+	case prefabType == 1, strings.Contains(normalized, "card"):
+		return "道具卡", "package"
+	case strings.Contains(normalized, "vip"):
+		return "会员", "star"
+	case strings.Contains(normalized, "starlight"):
+		return "星光", "sparkles"
+	case strings.Contains(normalized, "weapon"):
+		return "武器外观", "zap"
+	case strings.Contains(normalized, "packet"):
+		return "礼包", "gift"
+	default:
+		return "其他", "shopping-bag"
+	}
+}
+
+func afdianPurchaseURL(planID string) string {
+	planID = strings.TrimSpace(planID)
+	if planID == "" {
+		return ""
+	}
+	return "https://www.ifdian.net/item/" + url.PathEscape(planID)
 }
 
 func challengeCategory(itemType string) (string, string) {

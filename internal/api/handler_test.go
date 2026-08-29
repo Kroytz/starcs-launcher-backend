@@ -122,6 +122,24 @@ func TestStoreItemsCurrencyFilter(t *testing.T) {
 	}
 }
 
+func TestStoreItemsAfdianFilter(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/store/items?currency=afdian", nil)
+	response := httptest.NewRecorder()
+	newHandler().ServeHTTP(response, request)
+
+	var body envelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	var items []domain.StoreItem
+	if err := json.Unmarshal(body.Data, &items); err != nil {
+		t.Fatalf("decode items: %v", err)
+	}
+	if len(items) != 1 || items[0].Currency != "afdian" || items[0].PurchaseURL == "" {
+		t.Fatalf("unexpected afdian items: %+v", items)
+	}
+}
+
 func TestStoreItemsRejectsUnknownCurrency(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/store/items?currency=coin", nil)
 	response := httptest.NewRecorder()
