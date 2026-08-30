@@ -298,6 +298,7 @@ func (r *Repository) StoreItems(ctx context.Context) ([]domain.StoreItem, error)
 		LEFT JOIN scs_file AS f ON f.id = pv.file_id
 		WHERE pp.state = 1 AND pp.currency_id = 1
 		  AND p.state = 1 AND p.show_state IN (1, 2)
+		  AND LOWER(COALESCE(p.label, '')) NOT LIKE '%starforge%'
 		ORDER BY pp.sort ASC, p.rarity_id DESC, p.id ASC
 	`)
 	if err != nil {
