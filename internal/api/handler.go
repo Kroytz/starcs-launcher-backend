@@ -517,18 +517,18 @@ func (h *Handler) handleGamePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	steamID, err := parseSteamID(request.SteamID)
 	if err != nil {
-		h.writeError(w, http.StatusBadRequest, 4001, "Steam64 格式无效")
+		h.writeBusinessError(w, 4001, "Steam64 格式无效")
 		return
 	}
 	if err := passwordauth.Validate(request.NewPassword); err != nil {
-		h.writeError(w, http.StatusBadRequest, 4001, "新密码须为 8 至 128 个 UTF-8 字节")
+		h.writeBusinessError(w, 4001, "新密码须为 8 至 128 个 UTF-8 字节")
 		return
 	}
 
 	currentHash, err := h.players.GamePasswordHash(r.Context(), steamID)
 	if err != nil {
 		if errors.Is(err, mysqlrepo.ErrPlayerNotFound) {
-			h.writeError(w, http.StatusNotFound, 4004, "玩家账号不存在")
+			h.writeBusinessError(w, 4004, "玩家账号不存在")
 			return
 		}
 		h.writeRepositoryError(w, "query current game password", err)
@@ -536,12 +536,12 @@ func (h *Handler) handleGamePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if currentHash != "" {
 		if strings.TrimSpace(request.CurrentPassword) == "" {
-			h.writeError(w, http.StatusBadRequest, 4001, "修改密码时必须提供当前密码")
+			h.writeBusinessError(w, 4001, "修改密码时必须提供当前密码")
 			return
 		}
 		if err := h.players.Authenticate(r.Context(), steamID, request.CurrentPassword); err != nil {
 			if errors.Is(err, mysqlrepo.ErrInvalidCredentials) {
-				h.writeError(w, http.StatusUnauthorized, 4003, "当前密码错误")
+				h.writeBusinessError(w, 4003, "当前密码错误")
 				return
 			}
 			h.writeRepositoryError(w, "verify current game password", err)
@@ -556,7 +556,7 @@ func (h *Handler) handleGamePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.players.UpdateGamePasswordHash(r.Context(), steamID, encoded); err != nil {
 		if errors.Is(err, mysqlrepo.ErrPlayerNotFound) {
-			h.writeError(w, http.StatusNotFound, 4004, "玩家账号不存在")
+			h.writeBusinessError(w, 4004, "玩家账号不存在")
 			return
 		}
 		h.writeRepositoryError(w, "update game password", err)
@@ -707,6 +707,10 @@ func (h *Handler) writeSuccess(w http.ResponseWriter, data any) {
 
 func (h *Handler) writeError(w http.ResponseWriter, status, code int, message string) {
 	h.writeJSON(w, status, envelope{Code: code, Msg: message, Data: nil})
+}
+
+func (h *Handler) writeBusinessError(w http.ResponseWriter, code int, message string) {
+	h.writeError(w, http.StatusOK, code, message)
 }
 
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, value any) {

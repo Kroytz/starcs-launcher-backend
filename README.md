@@ -100,6 +100,7 @@ Invoke-RestMethod -Headers @{ Authorization = "Bearer $($login.data.token)"; 'X-
 - 星尘余额、持有物品来自 `DB_CHALLENGE`；商品名称、分类和当前价格以 `starduststore_catalog` 为准。
 - 玩家登录只使用 `star_user.game_password_hash`，不再读取后台管理员表 `scs_user`。密码以 Argon2id PHC 字符串保存，参数为 19 MiB 内存、2 次迭代、并行度 1。
 - 游戏内首次设置密码可不提供旧密码；已有密码时必须通过游戏服内部接口同时提交当前密码。Go 后端统一负责校验和生成摘要，C# 插件不会自行实现哈希算法。
+- 游戏服改密接口对参数或旧密码等业务失败保持 HTTP 200，并通过 `code/msg/data` 表达结果，以兼容 Star-Core 的标准 HTTP 客户端；API Key 失败和服务故障仍返回对应 HTTP 错误。
 - 登陆器登录后，每次真实库存读取或装备等敏感操作都会再次提交当前密码校验。校验失败时该 Bearer 会话会立即失效，登陆器应同步退出登录。
 - 装备配置不直接写库存数据库；后端通过 Star-Core 已有的 ClientPrefs API 更新 `star_light_store` 插件的 `p_s` 与 `w_s`，并保留同插件的其他偏好键。
 - `STAR_SKIP_PASSWORD_AUTH=true` 时仅校验 Steam64 格式并签发 24 小时只读会话；默认关闭，不能直接用于公开生产环境。
