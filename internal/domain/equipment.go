@@ -9,9 +9,10 @@ const (
 var EquipmentModes = []string{"AFK", "JB", "MG", "SCP", "TTT", "ZE", "ZM"}
 
 type EquipmentProfile struct {
-	Version int                      `json:"version"`
-	Plugin  string                   `json:"plugin"`
-	Modes   map[string]ModeEquipment `json:"modes"`
+	Version          int                      `json:"version"`
+	Plugin           string                   `json:"plugin"`
+	Modes            map[string]ModeEquipment `json:"modes"`
+	UnavailableModes map[string]string        `json:"unavailableModes"`
 }
 
 type ModeEquipment struct {
@@ -42,9 +43,10 @@ type EquipmentMutation struct {
 
 func NewEquipmentProfile() EquipmentProfile {
 	return EquipmentProfile{
-		Version: 2,
-		Plugin:  EquipmentPluginIdentity,
-		Modes:   make(map[string]ModeEquipment),
+		Version:          2,
+		Plugin:           EquipmentPluginIdentity,
+		Modes:            make(map[string]ModeEquipment),
+		UnavailableModes: make(map[string]string),
 	}
 }
 

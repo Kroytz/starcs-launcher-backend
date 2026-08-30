@@ -13,12 +13,13 @@ import (
 )
 
 type fakePreferenceServer struct {
-	mu    sync.Mutex
-	modes map[string][]preference
+	mu          sync.Mutex
+	modes       map[string][]preference
+	failedModes map[string]int
 }
 
 func newFakePreferenceServer() *fakePreferenceServer {
-	server := &fakePreferenceServer{modes: make(map[string][]preference)}
+	server := &fakePreferenceServer{modes: make(map[string][]preference), failedModes: make(map[string]int)}
 	for _, mode := range domain.EquipmentModes {
 		server.modes[mode] = []preference{
 			{Key: domain.PlayerSkinPreferenceKey, Type: stringPreferenceType, Value: `{"ct":0,"t":0}`},
@@ -41,6 +42,10 @@ func (server *fakePreferenceServer) ServeHTTP(w http.ResponseWriter, r *http.Req
 	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/cs2-client-pref/prefs/") {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/cs2-client-pref/prefs/"), "/")
 		mode := parts[0]
+		if status := server.failedModes[mode]; status != 0 {
+			http.Error(w, "mode unavailable", status)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(apiEnvelope[map[string][]preference]{
 			Code: 2000,
 			Msg:  "success",
@@ -59,6 +64,31 @@ func (server *fakePreferenceServer) ServeHTTP(w http.ResponseWriter, r *http.Req
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func TestLoadKeepsAvailableModesWhenOneModeFails(t *testing.T) {
+	preferenceServer := newFakePreferenceServer()
+	preferenceServer.failedModes["SCP"] = http.StatusForbidden
+	server := httptest.NewServer(preferenceServer)
+	defer server.Close()
+	client, err := New(server.URL+"/api/", "test-key", "X-Star-Api-Key")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	profile, err := client.Load(context.Background(), 76561198000000001)
+	if err != nil {
+		t.Fatalf("partial mode failure should not fail the profile: %v", err)
+	}
+	if !strings.Contains(profile.UnavailableModes["SCP"], "HTTP 403") {
+		t.Fatalf("expected SCP to be unavailable with its status, got %#v", profile.UnavailableModes)
+	}
+	if _, ok := profile.Modes["ZM"]; !ok {
+		t.Fatal("available ZM profile should still be returned")
+	}
+	if _, ok := profile.Modes["SCP"]; !ok {
+		t.Fatal("unavailable SCP should retain an empty shape for client compatibility")
+	}
 }
 
 func TestApplyPlayerAndWeaponEquipment(t *testing.T) {

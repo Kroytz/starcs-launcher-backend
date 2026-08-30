@@ -68,20 +68,17 @@ func New(baseURL, apiKey, apiKeyHeader string) (*Client, error) {
 }
 
 func (c *Client) Load(ctx context.Context, steamID uint64) (domain.EquipmentProfile, error) {
-	snapshots, err := c.loadAllModes(ctx, steamID)
-	if err != nil {
-		return domain.EquipmentProfile{}, err
-	}
-	return profileFromSnapshots(snapshots), nil
+	snapshots, unavailableModes := c.loadAllModes(ctx, steamID)
+	return profileFromSnapshots(snapshots, unavailableModes), nil
 }
 
 func (c *Client) Apply(ctx context.Context, steamID uint64, mutation domain.EquipmentMutation) (domain.EquipmentProfile, error) {
-	snapshots, err := c.loadAllModes(ctx, steamID)
-	if err != nil {
-		return domain.EquipmentProfile{}, err
-	}
+	snapshots, unavailableModes := c.loadAllModes(ctx, steamID)
 	originals := make(map[string][]preference, len(mutation.Modes))
 	for _, mode := range mutation.Modes {
+		if reason, unavailable := unavailableModes[mode]; unavailable {
+			return domain.EquipmentProfile{}, fmt.Errorf("equipment mode %q is unavailable: %s", mode, reason)
+		}
 		snapshot, ok := snapshots[mode]
 		if !ok {
 			return domain.EquipmentProfile{}, fmt.Errorf("unsupported equipment mode %q", mode)
@@ -104,12 +101,10 @@ func (c *Client) Apply(ctx context.Context, steamID uint64, mutation domain.Equi
 		}
 		savedModes = append(savedModes, mode)
 	}
-	return profileFromSnapshots(snapshots), nil
+	return profileFromSnapshots(snapshots, unavailableModes), nil
 }
 
-func (c *Client) loadAllModes(ctx context.Context, steamID uint64) (map[string]modeSnapshot, error) {
-	loadCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+func (c *Client) loadAllModes(ctx context.Context, steamID uint64) (map[string]modeSnapshot, map[string]string) {
 	type result struct {
 		mode     string
 		snapshot modeSnapshot
@@ -118,28 +113,24 @@ func (c *Client) loadAllModes(ctx context.Context, steamID uint64) (map[string]m
 	results := make(chan result, len(domain.EquipmentModes))
 	for _, mode := range domain.EquipmentModes {
 		go func(mode string) {
-			snapshot, err := c.loadMode(loadCtx, steamID, mode)
+			snapshot, err := c.loadMode(ctx, steamID, mode)
 			results <- result{mode: mode, snapshot: snapshot, err: err}
 		}(mode)
 	}
 
 	snapshots := make(map[string]modeSnapshot, len(domain.EquipmentModes))
-	var firstErr error
+	unavailableModes := make(map[string]string)
 	for range domain.EquipmentModes {
 		result := <-results
-		if result.err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("load %s equipment: %w", result.mode, result.err)
-			cancel()
+		if result.err != nil {
+			unavailableModes[result.mode] = result.err.Error()
 			continue
 		}
 		if result.err == nil {
 			snapshots[result.mode] = result.snapshot
 		}
 	}
-	if firstErr != nil {
-		return nil, firstErr
-	}
-	return snapshots, nil
+	return snapshots, unavailableModes
 }
 
 func (c *Client) loadMode(ctx context.Context, steamID uint64, mode string) (modeSnapshot, error) {
@@ -344,10 +335,18 @@ func applyWeaponSkinMutation(preference *domain.WeaponSkinPreference, mutation d
 	}
 }
 
-func profileFromSnapshots(snapshots map[string]modeSnapshot) domain.EquipmentProfile {
+func profileFromSnapshots(snapshots map[string]modeSnapshot, unavailableModes map[string]string) domain.EquipmentProfile {
 	profile := domain.NewEquipmentProfile()
 	for _, mode := range domain.EquipmentModes {
-		profile.Modes[mode] = snapshots[mode].equipment
+		snapshot, available := snapshots[mode]
+		if available {
+			profile.Modes[mode] = snapshot.equipment
+		} else {
+			profile.Modes[mode] = domain.NewModeEquipment()
+		}
+	}
+	for mode, reason := range unavailableModes {
+		profile.UnavailableModes[mode] = reason
 	}
 	return profile
 }
