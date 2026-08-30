@@ -60,6 +60,8 @@ type InventoryItem struct {
 	Icon         string `json:"icon"`
 	Tone         string `json:"tone"`
 	AcquiredAt   string `json:"acquiredAt"`
+	ExpiresAt    string `json:"expiresAt"`
+	Description  string `json:"description"`
 	Mode         string `json:"mode"`
 	UseLimit     int    `json:"useLimit"`
 	UseLimitInfo string `json:"useLimitInfo"`

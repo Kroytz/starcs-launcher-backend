@@ -157,6 +157,8 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 			COALESCE(r.name, ''),
 			i.number,
 			i.created,
+			i.expired,
+			COALESCE(p.desc, ''),
 			COALESCE(p.mode, 'ALL'),
 			p.use_limit,
 			COALESCE(p.use_limit_info, ''),
@@ -189,13 +191,15 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 			rarityName   string
 			quantity     int64
 			created      time.Time
+			expired      sql.NullTime
+			description  string
 			mode         string
 			useLimit     int
 			useLimitInfo string
 			weaponPrefab string
 			weaponTypeID int
 		)
-		if err := rows.Scan(&productID, &name, &label, &productType, &rarityID, &rarityName, &quantity, &created, &mode, &useLimit, &useLimitInfo, &weaponPrefab, &weaponTypeID); err != nil {
+		if err := rows.Scan(&productID, &name, &label, &productType, &rarityID, &rarityName, &quantity, &created, &expired, &description, &mode, &useLimit, &useLimitInfo, &weaponPrefab, &weaponTypeID); err != nil {
 			return nil, fmt.Errorf("scan inventory: %w", err)
 		}
 		itemType, icon := displayType(label, productType)
@@ -211,6 +215,8 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 			Icon:         icon,
 			Tone:         rarityTone(rarityID),
 			AcquiredAt:   created.Format(time.RFC3339),
+			ExpiresAt:    formatExpiry(expired),
+			Description:  description,
 			Mode:         mode,
 			UseLimit:     useLimit,
 			UseLimitInfo: useLimitInfo,
@@ -253,7 +259,8 @@ func weaponModelTypeName(value int) string {
 func (r *Repository) challengeInventory(ctx context.Context, steamID uint64) ([]domain.InventoryItem, error) {
 	rows, err := r.challengeDB.QueryContext(ctx, `
 		SELECT c.item_type, c.unique_id, c.display_name, c.category_name,
-		       COUNT(*), MIN(i.DateOfPurchase)
+		       COUNT(*), MIN(i.DateOfPurchase),
+		       MAX(CASE WHEN i.DateOfExpiration < '1000-01-01 00:00:00' THEN NULL ELSE i.DateOfExpiration END)
 		FROM starduststore_items AS i
 		INNER JOIN starduststore_catalog AS c
 		        ON BINARY c.item_type = BINARY i.Type
@@ -277,7 +284,8 @@ func (r *Repository) challengeInventory(ctx context.Context, steamID uint64) ([]
 		var itemType, uniqueID, displayName, category string
 		var quantity int64
 		var acquiredAt time.Time
-		if err := rows.Scan(&itemType, &uniqueID, &displayName, &category, &quantity, &acquiredAt); err != nil {
+		var expired sql.NullTime
+		if err := rows.Scan(&itemType, &uniqueID, &displayName, &category, &quantity, &acquiredAt, &expired); err != nil {
 			return nil, fmt.Errorf("scan challenge inventory: %w", err)
 		}
 		_, icon := challengeCategory(itemType)
@@ -292,6 +300,7 @@ func (r *Repository) challengeInventory(ctx context.Context, steamID uint64) ([]
 			Icon:       icon,
 			Tone:       "from-secondary to-violet-600",
 			AcquiredAt: acquiredAt.Format(time.RFC3339),
+			ExpiresAt:  formatExpiry(expired),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -855,6 +864,14 @@ func inventoryQuantity(quantity int64) int64 {
 		return quantity
 	}
 	return 1
+}
+
+// formatExpiry converts a nullable expiry column to RFC3339; NULL means permanent.
+func formatExpiry(expired sql.NullTime) string {
+	if !expired.Valid {
+		return ""
+	}
+	return expired.Time.Format(time.RFC3339)
 }
 
 func afdianCategory(label string, prefabType int) (string, string) {

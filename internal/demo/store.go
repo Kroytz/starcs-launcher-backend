@@ -73,7 +73,7 @@ func NewStore() Store {
 			{ID: "inv-star-rifle", Name: "星轨步枪涂装", Type: "武器外观", Rarity: "史诗", Quantity: 1, Icon: "zap", Tone: "from-primary to-secondary", AcquiredAt: "2026-08-12T18:30:00+08:00"},
 			{ID: "inv-starlight-agent", Name: "星光特勤队员外观", Type: "玩家外观", Rarity: "史诗", Quantity: 1, Icon: "user-round", Tone: "from-violet-500 to-primary", AcquiredAt: "2026-08-16T20:00:00+08:00"},
 			{ID: "inv-summer-badge", Name: "夏日纪念徽章", Type: "个人装饰", Rarity: "稀有", Quantity: 1, Icon: "star", Tone: "from-cyan-500 to-primary", AcquiredAt: "2026-08-20T12:00:00+08:00"},
-			{ID: "inv-crate-key", Name: "补给箱钥匙", Type: "消耗品", Rarity: "普通", Quantity: 3, Icon: "package", Tone: "from-accent to-orange-400", AcquiredAt: "2026-08-21T16:15:00+08:00"},
+			{ID: "inv-crate-key", Name: "补给箱钥匙", Type: "消耗品", Rarity: "普通", Quantity: 3, Icon: "package", Tone: "from-accent to-orange-400", AcquiredAt: "2026-08-21T16:15:00+08:00", ExpiresAt: "2026-09-21T16:15:00+08:00", Description: "开启补给箱获得随机外观，入库后 30 天内有效。"},
 			{ID: "inv-pioneer-title", Name: "先锋玩家称号", Type: "称号", Rarity: "限定", Quantity: 1, Icon: "trophy", Tone: "from-emerald-500 to-cyan-500", AcquiredAt: "2026-07-01T00:00:00+08:00"},
 			{ID: "inv-season-boost", Name: "赛季经验加成卡", Type: "增益道具", Rarity: "稀有", Quantity: 1, Icon: "gift", Tone: "from-secondary to-primary", AcquiredAt: "2026-08-25T09:10:00+08:00"},
 			{ID: "inv-guardian-mark", Name: "社区守护者徽记", Type: "个人装饰", Rarity: "限定", Quantity: 1, Icon: "shield-check", Tone: "from-sky-500 to-indigo-600", AcquiredAt: "2026-06-18T21:00:00+08:00"},
