@@ -93,6 +93,12 @@ func TestAfdianStoreMetadata(t *testing.T) {
 	}
 }
 
+func TestWorkshopPageURL(t *testing.T) {
+	if got := workshopPageURL(" 3711721516 "); got != "https://steamcommunity.com/workshop/filedetails/?id=3711721516" {
+		t.Fatalf("unexpected workshop page URL %q", got)
+	}
+}
+
 func TestChallengeCategoryAndTitle(t *testing.T) {
 	category, icon := challengeCategory("chatcolor")
 	if category != "聊天颜色" || icon != "sparkles" {

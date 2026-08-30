@@ -42,6 +42,7 @@ type PlayerRepository interface {
 	Announcements(ctx context.Context) ([]domain.Announcement, error)
 	StoreItems(ctx context.Context) ([]domain.StoreItem, error)
 	Maps(ctx context.Context) ([]domain.MapResource, error)
+	WorkshopPacks(ctx context.Context, mode string) ([]domain.WorkshopPack, error)
 	PlayerReadModel(ctx context.Context, steamID uint64) (domain.PlayerReadModel, error)
 }
 
@@ -138,6 +139,7 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/api/v1/announcements", h.handleAnnouncements)
 	mux.HandleFunc("/api/v1/store/items", h.handleStoreItems)
 	mux.HandleFunc("/api/v1/maps", h.handleMaps)
+	mux.HandleFunc("/api/v1/workshop-packs", h.handleWorkshopPacks)
 	mux.HandleFunc("/api/v1/auth/login", h.handleLogin)
 	mux.HandleFunc("/api/v1/auth/verify", h.handleVerifyPassword)
 	mux.HandleFunc("/api/v1/me", h.handleAccount)
@@ -254,6 +256,39 @@ func (h *Handler) handleMaps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeSuccess(w, maps)
+}
+
+func (h *Handler) handleWorkshopPacks(w http.ResponseWriter, r *http.Request) {
+	if !h.requireGET(w, r) {
+		return
+	}
+	mode := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("mode")))
+	if !validModeCode(mode) {
+		h.writeError(w, http.StatusBadRequest, 4001, "mode 必须是 1-16 位字母、数字、下划线或连字符")
+		return
+	}
+	if h.players == nil {
+		h.writeSuccess(w, []domain.WorkshopPack{})
+		return
+	}
+	packs, err := h.players.WorkshopPacks(r.Context(), mode)
+	if err != nil {
+		h.writeRepositoryError(w, "query workshop packs", err)
+		return
+	}
+	h.writeSuccess(w, packs)
+}
+
+func validModeCode(mode string) bool {
+	if len(mode) == 0 || len(mode) > 16 {
+		return false
+	}
+	for _, char := range mode {
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' && char != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Handler) handleAccount(w http.ResponseWriter, r *http.Request) {

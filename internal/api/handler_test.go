@@ -73,6 +73,13 @@ func (fakePlayers) Maps(_ context.Context) ([]domain.MapResource, error) {
 	return []domain.MapResource{{ID: 1, Name: "ze_test", WorkshopID: "123"}}, nil
 }
 
+func (fakePlayers) WorkshopPacks(_ context.Context, mode string) ([]domain.WorkshopPack, error) {
+	return []domain.WorkshopPack{
+		{ID: 1, Kind: "base", Mode: "ALL", Title: "基础资源包", WorkshopID: "3711721516"},
+		{ID: 2, Kind: "mode", Mode: mode, Title: mode + " 资源包", WorkshopID: "3652674769"},
+	}, nil
+}
+
 func (repository fakePlayers) PlayerReadModel(ctx context.Context, steamID uint64) (domain.PlayerReadModel, error) {
 	inventory, err := repository.Inventory(ctx, steamID)
 	return domain.PlayerReadModel{Inventory: inventory}, err
@@ -137,6 +144,37 @@ func TestBootstrap(t *testing.T) {
 	}
 	if len(data.Announcements) == 0 || len(data.StoreItems) == 0 || len(data.Inventory) == 0 {
 		t.Fatal("bootstrap response should contain demo display data")
+	}
+}
+
+func TestWorkshopPacksReturnsBaseAndRequestedMode(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/workshop-packs?mode=zm", nil)
+	response := httptest.NewRecorder()
+	newAuthenticatedHandler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", response.Code)
+	}
+	var body envelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	var packs []domain.WorkshopPack
+	if err := json.Unmarshal(body.Data, &packs); err != nil {
+		t.Fatalf("decode workshop packs: %v", err)
+	}
+	if len(packs) != 2 || packs[0].Kind != "base" || packs[1].Mode != "ZM" {
+		t.Fatalf("unexpected workshop packs: %#v", packs)
+	}
+}
+
+func TestWorkshopPacksRejectsInvalidMode(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/workshop-packs?mode=zm%20drop", nil)
+	response := httptest.NewRecorder()
+	newAuthenticatedHandler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", response.Code)
 	}
 }
 

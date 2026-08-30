@@ -544,6 +544,41 @@ func (r *Repository) Maps(ctx context.Context) ([]domain.MapResource, error) {
 	return items, nil
 }
 
+func (r *Repository) WorkshopPacks(ctx context.Context, mode string) ([]domain.WorkshopPack, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, kind, mode, title, description, workshop_id
+		FROM launcher_workshop_pack
+		WHERE enabled = 1
+		  AND ((kind = 'base' AND mode = 'ALL') OR (kind = 'mode' AND mode = ?))
+		ORDER BY CASE kind WHEN 'base' THEN 0 ELSE 1 END, sort_order ASC, id ASC
+	`, strings.ToUpper(strings.TrimSpace(mode)))
+	if err != nil {
+		return nil, fmt.Errorf("query workshop packs: %w", err)
+	}
+	defer rows.Close()
+
+	packs := make([]domain.WorkshopPack, 0)
+	for rows.Next() {
+		var pack domain.WorkshopPack
+		var workshopID uint64
+		if err := rows.Scan(&pack.ID, &pack.Kind, &pack.Mode, &pack.Title, &pack.Description, &workshopID); err != nil {
+			return nil, fmt.Errorf("scan workshop pack: %w", err)
+		}
+		pack.WorkshopID = strconv.FormatUint(workshopID, 10)
+		pack.WorkshopURL = workshopPageURL(pack.WorkshopID)
+		pack.SteamURL = "steam://openurl/" + pack.WorkshopURL
+		packs = append(packs, pack)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate workshop packs: %w", err)
+	}
+	return packs, nil
+}
+
+func workshopPageURL(workshopID string) string {
+	return "https://steamcommunity.com/workshop/filedetails/?id=" + url.QueryEscape(strings.TrimSpace(workshopID))
+}
+
 func (r *Repository) PlayerReadModel(ctx context.Context, steamID uint64) (domain.PlayerReadModel, error) {
 	account, err := r.Account(ctx, steamID)
 	if err != nil {

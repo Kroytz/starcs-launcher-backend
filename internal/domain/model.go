@@ -88,6 +88,17 @@ type MapResource struct {
 	Description string `json:"description"`
 }
 
+type WorkshopPack struct {
+	ID          uint64 `json:"id"`
+	Kind        string `json:"kind"`
+	Mode        string `json:"mode"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	WorkshopID  string `json:"workshopId"`
+	WorkshopURL string `json:"workshopUrl"`
+	SteamURL    string `json:"steamUrl"`
+}
+
 type PurchaseHistoryItem struct {
 	ID           uint64 `json:"id"`
 	ProductName  string `json:"productName"`

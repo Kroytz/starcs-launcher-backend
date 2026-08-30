@@ -71,6 +71,7 @@ go run -buildvcs=false ./cmd/import_stardust_catalog -file E:\Downloads\StarDust
 | GET | `/api/v1/bootstrap` | 一次获取登录器展示所需的全部基础数据 |
 | GET | `/api/v1/announcements` | 公告列表 |
 | GET | `/api/v1/store/items` | 商城商品，可用 `currency=starlight` 或 `currency=stardust` 筛选 |
+| GET | `/api/v1/workshop-packs?mode=ZM` | 获取公共基础资源包与指定模式资源包 |
 | GET | `/api/v1/me` | 演示用户资料、钱包及兑换比例 |
 | POST | `/api/v1/auth/login` | 使用 Steam64 与游戏内密码登录，并返回真实库存 |
 | POST | `/api/v1/auth/verify` | 敏感操作前使用 Bearer 会话与当前密码复验 |
@@ -85,6 +86,7 @@ go run -buildvcs=false ./cmd/import_stardust_catalog -file E:\Downloads\StarDust
 ```powershell
 Invoke-RestMethod http://localhost:8080/api/v1/bootstrap
 Invoke-RestMethod 'http://localhost:8080/api/v1/store/items?currency=starlight'
+Invoke-RestMethod 'http://localhost:8080/api/v1/workshop-packs?mode=ZM'
 ```
 
 登录示例：
