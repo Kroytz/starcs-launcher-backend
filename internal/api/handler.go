@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -44,6 +45,11 @@ type PlayerRepository interface {
 	PlayerReadModel(ctx context.Context, steamID uint64) (domain.PlayerReadModel, error)
 }
 
+type EquipmentService interface {
+	Load(ctx context.Context, steamID uint64) (domain.EquipmentProfile, error)
+	Apply(ctx context.Context, steamID uint64, mutation domain.EquipmentMutation) (domain.EquipmentProfile, error)
+}
+
 type loginRequest struct {
 	SteamID  string `json:"steamId"`
 	Password string `json:"password"`
@@ -65,6 +71,12 @@ type gamePasswordRequest struct {
 	NewPassword     string `json:"newPassword"`
 }
 
+type equipmentMutationRequest struct {
+	ProductID int64    `json:"productId"`
+	Modes     []string `json:"modes"`
+	Team      string   `json:"team"`
+}
+
 type session struct {
 	steamID   uint64
 	expiresAt time.Time
@@ -77,6 +89,7 @@ type Handler struct {
 	allowedOrigins   map[string]struct{}
 	skipPasswordAuth bool
 	gameAPIKey       string
+	equipment        EquipmentService
 	sessionMu        sync.Mutex
 	sessions         map[string]session
 }
@@ -86,6 +99,12 @@ type HandlerOption func(*Handler)
 func WithGameAPIKey(key string) HandlerOption {
 	return func(handler *Handler) {
 		handler.gameAPIKey = strings.TrimSpace(key)
+	}
+}
+
+func WithEquipmentService(service EquipmentService) HandlerOption {
+	return func(handler *Handler) {
+		handler.equipment = service
 	}
 }
 
@@ -123,6 +142,9 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/api/v1/auth/verify", h.handleVerifyPassword)
 	mux.HandleFunc("/api/v1/me", h.handleAccount)
 	mux.HandleFunc("/api/v1/me/inventory", h.handleInventory)
+	mux.HandleFunc("/api/v1/me/equipment", h.handleEquipment)
+	mux.HandleFunc("/api/v1/me/equipment/equip", h.handleEquip)
+	mux.HandleFunc("/api/v1/me/equipment/unequip", h.handleUnequip)
 	mux.HandleFunc("/internal/v1/game-password", h.handleGamePassword)
 
 	return h.withLogging(h.withCORS(mux))
@@ -259,6 +281,185 @@ func (h *Handler) handleInventory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeSuccess(w, items)
+}
+
+func (h *Handler) handleEquipment(w http.ResponseWriter, r *http.Request) {
+	if !h.requireGET(w, r) {
+		return
+	}
+	steamID, token, ok := h.requireSession(w, r)
+	if !ok {
+		return
+	}
+	if !h.verifyOperationPassword(w, r, steamID, token) {
+		return
+	}
+	if h.equipment == nil {
+		h.writeError(w, http.StatusServiceUnavailable, 5003, "装备配置服务尚未配置")
+		return
+	}
+	profile, err := h.equipment.Load(r.Context(), steamID)
+	if err != nil {
+		h.logger.Error("load player equipment", "error", err)
+		h.writeError(w, http.StatusBadGateway, 5002, "读取游戏内装备配置失败")
+		return
+	}
+	h.writeSuccess(w, profile)
+}
+
+func (h *Handler) handleEquip(w http.ResponseWriter, r *http.Request) {
+	h.handleEquipmentMutation(w, r, true)
+}
+
+func (h *Handler) handleUnequip(w http.ResponseWriter, r *http.Request) {
+	h.handleEquipmentMutation(w, r, false)
+}
+
+func (h *Handler) handleEquipmentMutation(w http.ResponseWriter, r *http.Request, equip bool) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		h.writeError(w, http.StatusMethodNotAllowed, 4005, "请求方法不支持")
+		return
+	}
+	steamID, token, ok := h.requireSession(w, r)
+	if !ok {
+		return
+	}
+	if !h.verifyOperationPassword(w, r, steamID, token) {
+		return
+	}
+	if h.equipment == nil {
+		h.writeError(w, http.StatusServiceUnavailable, 5003, "装备配置服务尚未配置")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	var request equipmentMutationRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		h.writeError(w, http.StatusBadRequest, 4001, "装备请求格式无效")
+		return
+	}
+	modes, err := validateEquipmentModes(request.Modes)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, 4001, err.Error())
+		return
+	}
+	team := strings.ToLower(strings.TrimSpace(request.Team))
+	if team != "all" && team != "ct" && team != "t" {
+		h.writeError(w, http.StatusBadRequest, 4001, "阵营仅支持 all、ct 或 t")
+		return
+	}
+
+	items, err := h.players.Inventory(r.Context(), steamID)
+	if err != nil {
+		h.logger.Error("load inventory before equipment mutation", "error", err)
+		h.writeError(w, http.StatusServiceUnavailable, 5002, "校验玩家库存失败")
+		return
+	}
+	item, ok := findInventoryItem(items, request.ProductID)
+	if !ok || item.Source != "starlight" {
+		h.writeError(w, http.StatusForbidden, 4003, "该物品不在当前玩家的有效星光库存中")
+		return
+	}
+	mutation, err := buildEquipmentMutation(item, modes, team, equip)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, 4001, err.Error())
+		return
+	}
+	profile, err := h.equipment.Apply(r.Context(), steamID, mutation)
+	if err != nil {
+		h.logger.Error("apply player equipment", "equip", equip, "product_id", request.ProductID, "error", err)
+		h.writeError(w, http.StatusBadGateway, 5002, "同步游戏内装备配置失败，原配置已尽力恢复")
+		return
+	}
+	h.writeSuccess(w, profile)
+}
+
+func validateEquipmentModes(values []string) ([]string, error) {
+	if len(values) == 0 || len(values) > len(domain.EquipmentModes) {
+		return nil, errors.New("至少选择一个有效服务器模式")
+	}
+	allowed := make(map[string]struct{}, len(domain.EquipmentModes))
+	for _, mode := range domain.EquipmentModes {
+		allowed[mode] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(values))
+	modes := make([]string, 0, len(values))
+	for _, value := range values {
+		mode := strings.ToUpper(strings.TrimSpace(value))
+		if _, ok := allowed[mode]; !ok {
+			return nil, fmt.Errorf("不支持服务器模式 %q", value)
+		}
+		if _, duplicate := seen[mode]; duplicate {
+			continue
+		}
+		seen[mode] = struct{}{}
+		modes = append(modes, mode)
+	}
+	return modes, nil
+}
+
+func findInventoryItem(items []domain.InventoryItem, productID int64) (domain.InventoryItem, bool) {
+	for _, item := range items {
+		if item.ProductID == productID {
+			return item, true
+		}
+	}
+	return domain.InventoryItem{}, false
+}
+
+func buildEquipmentMutation(item domain.InventoryItem, modes []string, team string, equip bool) (domain.EquipmentMutation, error) {
+	if item.UseLimit == 0 {
+		return domain.EquipmentMutation{}, errors.New("该物品当前已被禁用")
+	}
+	for _, mode := range modes {
+		if !productModeIsAllowed(item.Mode, mode) {
+			return domain.EquipmentMutation{}, fmt.Errorf("该物品不能用于 %s 模式", mode)
+		}
+	}
+	mutation := domain.EquipmentMutation{
+		ProductID: item.ProductID,
+		Modes:     modes,
+		Team:      team,
+		Equip:     equip,
+	}
+	switch item.Type {
+	case "角色外观", "玩家外观":
+		mutation.Slot = "player"
+	case "武器外观":
+		if item.WeaponType == "" || item.WeaponPrefab == "" {
+			return domain.EquipmentMutation{}, errors.New("该武器外观缺少 weapon_type 或 prefab 配置")
+		}
+		mutation.Slot = "weapon"
+		mutation.Team = "all"
+		mutation.WeaponType = item.WeaponType
+		mutation.WeaponPrefab = item.WeaponPrefab
+		if item.UseLimit == 7 {
+			ownerID, err := strconv.ParseInt(strings.TrimSpace(item.UseLimitInfo), 10, 64)
+			if err != nil || ownerID <= 0 {
+				return domain.EquipmentMutation{}, errors.New("该专属武器缺少关联角色商品 ID")
+			}
+			mutation.ExclusiveFor = strconv.FormatInt(ownerID, 10)
+		}
+	default:
+		return domain.EquipmentMutation{}, errors.New("该物品不是可装备外观")
+	}
+	return mutation, nil
+}
+
+func productModeIsAllowed(expression, mode string) bool {
+	parts := strings.SplitN(expression, "#", 2)
+	allowed := parts[0]
+	disallowed := ""
+	if len(parts) == 2 {
+		disallowed = parts[1]
+	}
+	if disallowed == "" {
+		return strings.Contains(allowed, "ALL") || strings.Contains(allowed, mode)
+	}
+	return !strings.Contains(disallowed, mode)
 }
 
 func (h *Handler) handleVerifyPassword(w http.ResponseWriter, r *http.Request) {

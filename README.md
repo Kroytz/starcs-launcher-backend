@@ -20,6 +20,9 @@ $env:STAR_BACKEND_ADDR = ":8080"
 $env:STAR_CORS_ORIGINS = "http://localhost:1420,http://tauri.localhost,https://tauri.localhost,tauri://localhost"
 $env:STAR_SKIP_PASSWORD_AUTH = "true" # 只读开发期临时跳过游戏内密码校验
 $env:STAR_GAME_API_KEY = "与游戏服 Star-Core 配置一致的长随机密钥"
+$env:STAR_CLIENT_PREFS_API_URL = "Star-Core public.json 中的 api.base_url"
+$env:STAR_CLIENT_PREFS_API_KEY = "Star-Core public.json 中的 api.api_key"
+$env:STAR_CLIENT_PREFS_API_KEY_HEADER = "X-Star-Api-Key"
 $env:STAR_DB_USER = "数据库用户"
 $env:STAR_DB_PASSWORD = "数据库密码"
 $env:STAR_DB_HOST = "mysql.example.com"
@@ -72,6 +75,9 @@ go run -buildvcs=false ./cmd/import_stardust_catalog -file E:\Downloads\StarDust
 | POST | `/api/v1/auth/login` | 使用 Steam64 与游戏内密码登录，并返回真实库存 |
 | POST | `/api/v1/auth/verify` | 敏感操作前使用 Bearer 会话与当前密码复验 |
 | GET | `/api/v1/me/inventory` | 使用 Bearer 会话读取真实库存，并通过 `X-StarCS-Reauth` 携带当前密码 |
+| GET | `/api/v1/me/equipment` | 读取 StarLightStore 在所有支持模式中的真实装备配置 |
+| POST | `/api/v1/me/equipment/equip` | 装备当前账号持有的角色/武器外观 |
+| POST | `/api/v1/me/equipment/unequip` | 卸下当前账号持有的角色/武器外观 |
 | POST | `/internal/v1/game-password` | 游戏服设置/修改 `star_user` 游戏密码；需要 `X-Star-Api-Key` |
 
 示例：
@@ -95,6 +101,7 @@ Invoke-RestMethod -Headers @{ Authorization = "Bearer $($login.data.token)"; 'X-
 - 玩家登录只使用 `star_user.game_password_hash`，不再读取后台管理员表 `scs_user`。密码以 Argon2id PHC 字符串保存，参数为 19 MiB 内存、2 次迭代、并行度 1。
 - 游戏内首次设置密码可不提供旧密码；已有密码时必须通过游戏服内部接口同时提交当前密码。Go 后端统一负责校验和生成摘要，C# 插件不会自行实现哈希算法。
 - 登陆器登录后，每次真实库存读取或装备等敏感操作都会再次提交当前密码校验。校验失败时该 Bearer 会话会立即失效，登陆器应同步退出登录。
+- 装备配置不直接写库存数据库；后端通过 Star-Core 已有的 ClientPrefs API 更新 `star_light_store` 插件的 `p_s` 与 `w_s`，并保留同插件的其他偏好键。
 - `STAR_SKIP_PASSWORD_AUTH=true` 时仅校验 Steam64 格式并签发 24 小时只读会话；默认关闭，不能直接用于公开生产环境。
 - 登录会话保存在后端内存中，有效期 24 小时；服务重启后需要重新登录。
 - `/api/v1/me`、公告、钱包和商城商品目前仍是展示数据。

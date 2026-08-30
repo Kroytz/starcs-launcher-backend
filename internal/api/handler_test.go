@@ -46,7 +46,19 @@ func (fakePlayers) UpdateGamePasswordHash(_ context.Context, _ uint64, _ string)
 }
 
 func (fakePlayers) Inventory(_ context.Context, steamID uint64) ([]domain.InventoryItem, error) {
-	return []domain.InventoryItem{{ProductID: 42, ID: "product-42", Name: "真实库存测试物品", Type: "物品", Rarity: "SR", Quantity: 1}}, nil
+	return []domain.InventoryItem{{
+		ProductID:    42,
+		ID:           "product-42",
+		Source:       "starlight",
+		Name:         "真实库存测试武器",
+		Type:         "武器外观",
+		Rarity:       "SR",
+		Quantity:     1,
+		Mode:         "ALL",
+		UseLimit:     1,
+		WeaponPrefab: "weapon_ak47",
+		WeaponType:   "CommonRifle",
+	}}, nil
 }
 
 func (fakePlayers) Announcements(_ context.Context) ([]domain.Announcement, error) {
@@ -74,6 +86,28 @@ func newAuthenticatedHandler() http.Handler {
 func newPasswordlessHandler() http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return api.NewHandler(demo.NewStore(), fakePlayers{}, logger, []string{"http://localhost:1420"}, true)
+}
+
+type fakeEquipmentService struct {
+	mutation domain.EquipmentMutation
+}
+
+func (service *fakeEquipmentService) Load(_ context.Context, _ uint64) (domain.EquipmentProfile, error) {
+	profile := domain.NewEquipmentProfile()
+	for _, mode := range domain.EquipmentModes {
+		profile.Modes[mode] = domain.NewModeEquipment()
+	}
+	return profile, nil
+}
+
+func (service *fakeEquipmentService) Apply(ctx context.Context, steamID uint64, mutation domain.EquipmentMutation) (domain.EquipmentProfile, error) {
+	service.mutation = mutation
+	return service.Load(ctx, steamID)
+}
+
+func newEquipmentHandler(service api.EquipmentService) http.Handler {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return api.NewHandler(demo.NewStore(), fakePlayers{}, logger, nil, false, api.WithEquipmentService(service))
 }
 
 func TestBootstrap(t *testing.T) {
@@ -242,6 +276,83 @@ func TestWrongOperationPasswordRevokesSession(t *testing.T) {
 	if retryResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked token should stay unauthorized, got %d", retryResponse.Code)
 	}
+}
+
+func TestEquipmentEndpointsReadAndMutateServerPreferences(t *testing.T) {
+	service := &fakeEquipmentService{}
+	handler := newEquipmentHandler(service)
+	token := authenticateTestPlayer(t, handler)
+
+	readRequest := httptest.NewRequest(http.MethodGet, "/api/v1/me/equipment", nil)
+	readRequest.Header.Set("Authorization", "Bearer "+token)
+	readRequest.Header.Set("X-StarCS-Reauth", "valid-password")
+	readResponse := httptest.NewRecorder()
+	handler.ServeHTTP(readResponse, readRequest)
+	if readResponse.Code != http.StatusOK {
+		t.Fatalf("equipment read failed: %d %s", readResponse.Code, readResponse.Body.String())
+	}
+
+	equipRequest := httptest.NewRequest(http.MethodPost, "/api/v1/me/equipment/equip", strings.NewReader(`{"productId":42,"modes":["ZM","SCP"],"team":"all"}`))
+	equipRequest.Header.Set("Authorization", "Bearer "+token)
+	equipRequest.Header.Set("X-StarCS-Reauth", "valid-password")
+	equipResponse := httptest.NewRecorder()
+	handler.ServeHTTP(equipResponse, equipRequest)
+	if equipResponse.Code != http.StatusOK {
+		t.Fatalf("equipment mutation failed: %d %s", equipResponse.Code, equipResponse.Body.String())
+	}
+	if !service.mutation.Equip || service.mutation.ProductID != 42 || service.mutation.Slot != "weapon" {
+		t.Fatalf("unexpected equipment mutation: %+v", service.mutation)
+	}
+	if service.mutation.WeaponType != "CommonRifle" || service.mutation.WeaponPrefab != "weapon_ak47" {
+		t.Fatalf("weapon metadata must come from owned inventory: %+v", service.mutation)
+	}
+	if strings.Join(service.mutation.Modes, ",") != "ZM,SCP" {
+		t.Fatalf("unexpected modes: %+v", service.mutation.Modes)
+	}
+
+	unequipRequest := httptest.NewRequest(http.MethodPost, "/api/v1/me/equipment/unequip", strings.NewReader(`{"productId":42,"modes":["ZM"],"team":"all"}`))
+	unequipRequest.Header.Set("Authorization", "Bearer "+token)
+	unequipRequest.Header.Set("X-StarCS-Reauth", "valid-password")
+	unequipResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unequipResponse, unequipRequest)
+	if unequipResponse.Code != http.StatusOK || service.mutation.Equip {
+		t.Fatalf("unequip failed: status=%d mutation=%+v body=%s", unequipResponse.Code, service.mutation, unequipResponse.Body.String())
+	}
+}
+
+func TestEquipmentMutationRejectsUnownedProduct(t *testing.T) {
+	service := &fakeEquipmentService{}
+	handler := newEquipmentHandler(service)
+	token := authenticateTestPlayer(t, handler)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/me/equipment/equip", strings.NewReader(`{"productId":999,"modes":["ZM"],"team":"all"}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("X-StarCS-Reauth", "valid-password")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected unowned item rejection, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func authenticateTestPlayer(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"steamId":"76561198000000001","password":"valid-password"}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", response.Code, response.Body.String())
+	}
+	var body envelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	var login struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body.Data, &login); err != nil {
+		t.Fatal(err)
+	}
+	return login.Token
 }
 
 type mutablePasswordPlayers struct {

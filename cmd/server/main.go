@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/starcs/star-launcher-backend/internal/api"
+	"github.com/starcs/star-launcher-backend/internal/clientprefs"
 	"github.com/starcs/star-launcher-backend/internal/config"
 	"github.com/starcs/star-launcher-backend/internal/demo"
 	"github.com/starcs/star-launcher-backend/internal/mysqlrepo"
@@ -42,6 +43,23 @@ func main() {
 	gameAPIKey := strings.TrimSpace(os.Getenv("STAR_GAME_API_KEY"))
 	if gameAPIKey == "" {
 		logger.Warn("STAR_GAME_API_KEY is empty; the game-server password update endpoint is disabled")
+	}
+	var equipment api.EquipmentService
+	clientPrefsURL := strings.TrimSpace(os.Getenv("STAR_CLIENT_PREFS_API_URL"))
+	if clientPrefsURL == "" {
+		logger.Warn("STAR_CLIENT_PREFS_API_URL is empty; equipment read and mutation endpoints are disabled")
+	} else {
+		client, err := clientprefs.New(
+			clientPrefsURL,
+			os.Getenv("STAR_CLIENT_PREFS_API_KEY"),
+			envOrDefault("STAR_CLIENT_PREFS_API_KEY_HEADER", "X-Star-Api-Key"),
+		)
+		if err != nil {
+			logger.Error("configure client preferences service", "error", err)
+			os.Exit(1)
+		}
+		equipment = client
+		logger.Info("client preferences equipment service configured")
 	}
 
 	var players api.PlayerRepository
@@ -79,8 +97,16 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr:              addr,
-		Handler:           api.NewHandler(demo.NewStore(), players, logger, origins, skipPasswordAuth, api.WithGameAPIKey(gameAPIKey)),
+		Addr: addr,
+		Handler: api.NewHandler(
+			demo.NewStore(),
+			players,
+			logger,
+			origins,
+			skipPasswordAuth,
+			api.WithGameAPIKey(gameAPIKey),
+			api.WithEquipmentService(equipment),
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
