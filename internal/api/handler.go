@@ -66,9 +66,9 @@ type verifyPasswordRequest struct {
 }
 
 type gamePasswordRequest struct {
-	SteamID         string `json:"steamId"`
-	CurrentPassword string `json:"currentPassword"`
-	NewPassword     string `json:"newPassword"`
+	SteamID           string `json:"steamId"`
+	NewPassword       string `json:"newPassword"`
+	IdentityValidated bool   `json:"identityValidated"`
 }
 
 type equipmentMutationRequest struct {
@@ -524,8 +524,12 @@ func (h *Handler) handleGamePassword(w http.ResponseWriter, r *http.Request) {
 		h.writeBusinessError(w, 4001, "新密码须为 8 至 128 个 UTF-8 字节")
 		return
 	}
+	if !request.IdentityValidated {
+		h.writeBusinessError(w, 4003, "游戏内身份尚未完成校验")
+		return
+	}
 
-	currentHash, err := h.players.GamePasswordHash(r.Context(), steamID)
+	_, err = h.players.GamePasswordHash(r.Context(), steamID)
 	if err != nil {
 		if errors.Is(err, mysqlrepo.ErrPlayerNotFound) {
 			h.writeBusinessError(w, 4004, "玩家账号不存在")
@@ -533,20 +537,6 @@ func (h *Handler) handleGamePassword(w http.ResponseWriter, r *http.Request) {
 		}
 		h.writeRepositoryError(w, "query current game password", err)
 		return
-	}
-	if currentHash != "" {
-		if strings.TrimSpace(request.CurrentPassword) == "" {
-			h.writeBusinessError(w, 4001, "修改密码时必须提供当前密码")
-			return
-		}
-		if err := h.players.Authenticate(r.Context(), steamID, request.CurrentPassword); err != nil {
-			if errors.Is(err, mysqlrepo.ErrInvalidCredentials) {
-				h.writeBusinessError(w, 4003, "当前密码错误")
-				return
-			}
-			h.writeRepositoryError(w, "verify current game password", err)
-			return
-		}
 	}
 	encoded, err := passwordauth.Hash(request.NewPassword)
 	if err != nil {

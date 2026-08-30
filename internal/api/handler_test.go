@@ -394,7 +394,22 @@ func TestGamePasswordEndpointSetsAndChangesPassword(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := api.NewHandler(demo.NewStore(), players, logger, nil, false, api.WithGameAPIKey("game-secret"))
 
-	setRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/game-password", strings.NewReader(`{"steamId":"76561198000000001","newPassword":"first-password"}`))
+	unvalidatedRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/game-password", strings.NewReader(`{"steamId":"76561198000000001","newPassword":"first-password"}`))
+	unvalidatedRequest.Header.Set("X-Star-Api-Key", "game-secret")
+	unvalidatedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unvalidatedResponse, unvalidatedRequest)
+	if unvalidatedResponse.Code != http.StatusOK {
+		t.Fatalf("identity rejection must use the standard HTTP 200 envelope, got %d", unvalidatedResponse.Code)
+	}
+	var unvalidatedBody envelope
+	if err := json.NewDecoder(unvalidatedResponse.Body).Decode(&unvalidatedBody); err != nil {
+		t.Fatal(err)
+	}
+	if unvalidatedBody.Code != 4003 || players.hash != "" {
+		t.Fatalf("unvalidated identity must not set a password: body=%+v hash=%q", unvalidatedBody, players.hash)
+	}
+
+	setRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/game-password", strings.NewReader(`{"steamId":"76561198000000001","newPassword":"first-password","identityValidated":true}`))
 	setRequest.Header.Set("X-Star-Api-Key", "game-secret")
 	setResponse := httptest.NewRecorder()
 	handler.ServeHTTP(setResponse, setRequest)
@@ -406,26 +421,7 @@ func TestGamePasswordEndpointSetsAndChangesPassword(t *testing.T) {
 		t.Fatalf("stored initial hash is invalid: valid=%v err=%v", valid, err)
 	}
 
-	wrongRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/game-password", strings.NewReader(`{"steamId":"76561198000000001","currentPassword":"wrong-password","newPassword":"second-password"}`))
-	wrongRequest.Header.Set("X-Star-Api-Key", "game-secret")
-	wrongResponse := httptest.NewRecorder()
-	handler.ServeHTTP(wrongResponse, wrongRequest)
-	if wrongResponse.Code != http.StatusOK {
-		t.Fatalf("business rejection must use the standard HTTP 200 envelope, got %d", wrongResponse.Code)
-	}
-	var wrongBody envelope
-	if err := json.NewDecoder(wrongResponse.Body).Decode(&wrongBody); err != nil {
-		t.Fatal(err)
-	}
-	if wrongBody.Code != 4003 || wrongBody.Msg != "当前密码错误" {
-		t.Fatalf("unexpected wrong-password response: %+v", wrongBody)
-	}
-	valid, err = passwordauth.Verify("first-password", players.hash)
-	if err != nil || !valid {
-		t.Fatalf("wrong current password must not change the stored hash: valid=%v err=%v", valid, err)
-	}
-
-	changeRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/game-password", strings.NewReader(`{"steamId":"76561198000000001","currentPassword":"first-password","newPassword":"second-password"}`))
+	changeRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/game-password", strings.NewReader(`{"steamId":"76561198000000001","newPassword":"second-password","identityValidated":true}`))
 	changeRequest.Header.Set("X-Star-Api-Key", "game-secret")
 	changeResponse := httptest.NewRecorder()
 	handler.ServeHTTP(changeResponse, changeRequest)
