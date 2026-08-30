@@ -65,6 +65,22 @@ func TestInventoryQuantityTreatsPermanentRowsAsOwned(t *testing.T) {
 	}
 }
 
+func TestWeaponModelTypeNameMatchesStarLightStoreEnum(t *testing.T) {
+	tests := map[int]string{
+		0:  "",
+		1:  "Knife",
+		4:  "SubMachineGun",
+		10: "CommonRifle",
+		14: "StackableItem",
+		99: "",
+	}
+	for value, want := range tests {
+		if got := weaponModelTypeName(value); got != want {
+			t.Fatalf("weaponModelTypeName(%d) = %q, want %q", value, got, want)
+		}
+	}
+}
+
 func TestAfdianStoreMetadata(t *testing.T) {
 	if got := afdianPurchaseURL(" 530b6328383811efab485254001e7c00 "); got != "https://www.ifdian.net/item/530b6328383811efab485254001e7c00" {
 		t.Fatalf("unexpected afdian purchase URL %q", got)

@@ -115,10 +115,16 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 			p.rarity_id,
 			COALESCE(r.name, ''),
 			i.number,
-			i.created
+			i.created,
+			COALESCE(p.mode, 'ALL'),
+			p.use_limit,
+			COALESCE(p.use_limit_info, ''),
+			COALESCE(wm.prefab, ''),
+			COALESCE(wm.weapon_type, 0)
 		FROM sls_player_inventory AS i
 		INNER JOIN sls_product AS p ON p.id = i.product_id
 		LEFT JOIN sls_product_rarity AS r ON r.id = p.rarity_id
+		LEFT JOIN sls_product_detail_weapon_model AS wm ON wm.product_id = p.id
 		WHERE i.steamid = ?
 			AND (i.expired IS NULL OR i.expired > NOW())
 			AND (i.number > 0 OR i.expired > NOW())
@@ -134,31 +140,41 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 	items := make([]domain.InventoryItem, 0)
 	for rows.Next() {
 		var (
-			productID   int64
-			name        string
-			label       string
-			productType int
-			rarityID    int
-			rarityName  string
-			quantity    int64
-			created     time.Time
+			productID    int64
+			name         string
+			label        string
+			productType  int
+			rarityID     int
+			rarityName   string
+			quantity     int64
+			created      time.Time
+			mode         string
+			useLimit     int
+			useLimitInfo string
+			weaponPrefab string
+			weaponTypeID int
 		)
-		if err := rows.Scan(&productID, &name, &label, &productType, &rarityID, &rarityName, &quantity, &created); err != nil {
+		if err := rows.Scan(&productID, &name, &label, &productType, &rarityID, &rarityName, &quantity, &created, &mode, &useLimit, &useLimitInfo, &weaponPrefab, &weaponTypeID); err != nil {
 			return nil, fmt.Errorf("scan inventory: %w", err)
 		}
 		itemType, icon := displayType(label, productType)
 		items = append(items, domain.InventoryItem{
-			ProductID:  productID,
-			ID:         fmt.Sprintf("product-%d", productID),
-			Source:     "starlight",
-			UniqueID:   strconv.FormatInt(productID, 10),
-			Name:       name,
-			Type:       itemType,
-			Rarity:     displayRarity(rarityID, rarityName),
-			Quantity:   inventoryQuantity(quantity),
-			Icon:       icon,
-			Tone:       rarityTone(rarityID),
-			AcquiredAt: created.Format(time.RFC3339),
+			ProductID:    productID,
+			ID:           fmt.Sprintf("product-%d", productID),
+			Source:       "starlight",
+			UniqueID:     strconv.FormatInt(productID, 10),
+			Name:         name,
+			Type:         itemType,
+			Rarity:       displayRarity(rarityID, rarityName),
+			Quantity:     inventoryQuantity(quantity),
+			Icon:         icon,
+			Tone:         rarityTone(rarityID),
+			AcquiredAt:   created.Format(time.RFC3339),
+			Mode:         mode,
+			UseLimit:     useLimit,
+			UseLimitInfo: useLimitInfo,
+			WeaponPrefab: weaponPrefab,
+			WeaponType:   weaponModelTypeName(weaponTypeID),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -172,6 +188,25 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 		items = append(items, challengeItems...)
 	}
 	return items, nil
+}
+
+func weaponModelTypeName(value int) string {
+	return map[int]string{
+		1:  "Knife",
+		2:  "CommonPistol",
+		3:  "SilencerPistol",
+		4:  "SubMachineGun",
+		5:  "SniperRifle",
+		6:  "MachineGun",
+		7:  "Grenade",
+		8:  "TubeFedShotGun",
+		9:  "MagazineFedShotGun",
+		10: "CommonRifle",
+		11: "SilencerRifle",
+		12: "SightRifle",
+		13: "DoublePistol",
+		14: "StackableItem",
+	}[value]
 }
 
 func (r *Repository) challengeInventory(ctx context.Context, steamID uint64) ([]domain.InventoryItem, error) {

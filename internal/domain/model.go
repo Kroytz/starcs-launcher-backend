@@ -49,17 +49,22 @@ type StoreItem struct {
 }
 
 type InventoryItem struct {
-	ProductID  int64  `json:"productId"`
-	ID         string `json:"id"`
-	Source     string `json:"source"`
-	UniqueID   string `json:"uniqueId"`
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Rarity     string `json:"rarity"`
-	Quantity   int64  `json:"quantity"`
-	Icon       string `json:"icon"`
-	Tone       string `json:"tone"`
-	AcquiredAt string `json:"acquiredAt"`
+	ProductID    int64  `json:"productId"`
+	ID           string `json:"id"`
+	Source       string `json:"source"`
+	UniqueID     string `json:"uniqueId"`
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	Rarity       string `json:"rarity"`
+	Quantity     int64  `json:"quantity"`
+	Icon         string `json:"icon"`
+	Tone         string `json:"tone"`
+	AcquiredAt   string `json:"acquiredAt"`
+	Mode         string `json:"mode"`
+	UseLimit     int    `json:"useLimit"`
+	UseLimitInfo string `json:"useLimitInfo"`
+	WeaponPrefab string `json:"weaponPrefab"`
+	WeaponType   string `json:"weaponType"`
 }
 
 type Profile struct {
