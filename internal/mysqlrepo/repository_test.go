@@ -53,6 +53,15 @@ func TestDisplayTypeMapsItemCardsAndCharacters(t *testing.T) {
 	}
 }
 
+func TestInventoryQuantityTreatsPermanentRowsAsOwned(t *testing.T) {
+	if got := inventoryQuantity(0); got != 1 {
+		t.Fatalf("permanent inventory row should display as one item, got %d", got)
+	}
+	if got := inventoryQuantity(4); got != 4 {
+		t.Fatalf("stacked inventory quantity should be preserved, got %d", got)
+	}
+}
+
 func TestAfdianStoreMetadata(t *testing.T) {
 	if got := afdianPurchaseURL(" 530b6328383811efab485254001e7c00 "); got != "https://www.ifdian.net/item/530b6328383811efab485254001e7c00" {
 		t.Fatalf("unexpected afdian purchase URL %q", got)

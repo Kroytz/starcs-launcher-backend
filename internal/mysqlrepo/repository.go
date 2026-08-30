@@ -120,8 +120,8 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 		INNER JOIN sls_product AS p ON p.id = i.product_id
 		LEFT JOIN sls_product_rarity AS r ON r.id = p.rarity_id
 		WHERE i.steamid = ?
-			AND i.number > 0
 			AND (i.expired IS NULL OR i.expired > NOW())
+			AND (i.number > 0 OR i.expired > NOW())
 			AND p.show_state IN (1, 3)
 			AND LOWER(COALESCE(p.label, '')) NOT LIKE '%character%'
 		ORDER BY p.rarity_id DESC, i.updated DESC, i.product_id ASC
@@ -155,7 +155,7 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 			Name:       name,
 			Type:       itemType,
 			Rarity:     displayRarity(rarityID, rarityName),
-			Quantity:   quantity,
+			Quantity:   inventoryQuantity(quantity),
 			Icon:       icon,
 			Tone:       rarityTone(rarityID),
 			AcquiredAt: created.Format(time.RFC3339),
@@ -736,6 +736,13 @@ func displayType(label string, productType int) (string, string) {
 	default:
 		return "物品", "gift"
 	}
+}
+
+func inventoryQuantity(quantity int64) int64 {
+	if quantity > 0 {
+		return quantity
+	}
+	return 1
 }
 
 func afdianCategory(label string, prefabType int) (string, string) {
