@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -59,6 +60,18 @@ func (fakePlayers) Inventory(_ context.Context, steamID uint64) ([]domain.Invent
 		WeaponPrefab: "weapon_ak47",
 		WeaponType:   "CommonRifle",
 	}}, nil
+}
+
+func (fakePlayers) StardustEquipments(_ context.Context, _ uint64) ([]domain.StardustEquipment, error) {
+	return []domain.StardustEquipment{}, nil
+}
+
+func (fakePlayers) EquipStardust(_ context.Context, _ uint64, _, _ string) error {
+	return nil
+}
+
+func (fakePlayers) UnequipStardust(_ context.Context, _ uint64, _, _ string) error {
+	return nil
 }
 
 func (fakePlayers) Announcements(_ context.Context) ([]domain.Announcement, error) {
@@ -502,6 +515,92 @@ func TestInventoryRequiresLogin(t *testing.T) {
 		t.Fatalf("expected status 401, got %d", response.Code)
 	}
 }
+
+type stardustTrackingPlayers struct {
+	fakePlayers
+	equipped map[string]string
+}
+
+func newStardustTrackingPlayers() *stardustTrackingPlayers {
+	return &stardustTrackingPlayers{equipped: make(map[string]string)}
+}
+
+func (players *stardustTrackingPlayers) StardustEquipments(_ context.Context, _ uint64) ([]domain.StardustEquipment, error) {
+	equipments := make([]domain.StardustEquipment, 0, len(players.equipped))
+	for itemType, uniqueID := range players.equipped {
+		equipments = append(equipments, domain.StardustEquipment{Type: itemType, UniqueID: uniqueID, Slot: 1})
+	}
+	return equipments, nil
+}
+
+func (players *stardustTrackingPlayers) EquipStardust(_ context.Context, _ uint64, itemType, uniqueID string) error {
+	if uniqueID == "not-owned" {
+		return errors.New("该物品不在当前玩家的有效星尘库存中")
+	}
+	players.equipped[itemType] = uniqueID
+	return nil
+}
+
+func (players *stardustTrackingPlayers) UnequipStardust(_ context.Context, _ uint64, itemType, uniqueID string) error {
+	if players.equipped[itemType] == uniqueID {
+		delete(players.equipped, itemType)
+	}
+	return nil
+}
+
+func TestStardustEquipmentEquipUnequipAndTypeMutex(t *testing.T) {
+	players := newStardustTrackingPlayers()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := api.NewHandler(demo.NewStore(), players, logger, nil, false)
+	token := authenticateTestPlayer(t, handler)
+
+	call := func(path, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("X-StarCS-Reauth", "valid-password")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	if response := call("/api/v1/me/stardust/equip", `{"itemType":"chatcolor","uniqueId":"red"}`); response.Code != http.StatusOK {
+		t.Fatalf("equip failed: %d %s", response.Code, response.Body.String())
+	}
+	if players.equipped["chatcolor"] != "red" {
+		t.Fatalf("expected chatcolor=red, got %+v", players.equipped)
+	}
+
+	// 同 Type 装备新物品应顶掉旧物品
+	if response := call("/api/v1/me/stardust/equip", `{"itemType":"chatcolor","uniqueId":"blue"}`); response.Code != http.StatusOK {
+		t.Fatalf("re-equip failed: %d %s", response.Code, response.Body.String())
+	}
+	if players.equipped["chatcolor"] != "blue" {
+		t.Fatalf("expected chatcolor=blue after mutex replace, got %+v", players.equipped)
+	}
+
+	// 卸下
+	if response := call("/api/v1/me/stardust/unequip", `{"itemType":"chatcolor","uniqueId":"blue"}`); response.Code != http.StatusOK {
+		t.Fatalf("unequip failed: %d %s", response.Code, response.Body.String())
+	}
+	if _, exists := players.equipped["chatcolor"]; exists {
+		t.Fatalf("expected chatcolor removed, got %+v", players.equipped)
+	}
+
+	// 未拥有的物品应被拒绝
+	if response := call("/api/v1/me/stardust/equip", `{"itemType":"chatcolor","uniqueId":"not-owned"}`); response.Code == http.StatusOK {
+		t.Fatalf("expected unowned stardust item rejection, got %d", response.Code)
+	}
+}
+
+func TestStardustEquipmentRequiresLogin(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/me/stardust/equip", strings.NewReader(`{"itemType":"chatcolor","uniqueId":"red"}`))
+	response := httptest.NewRecorder()
+	newAuthenticatedHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", response.Code)
+	}
+}
+
 
 func TestBootstrapUsesReadOnlyRepositoryData(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)

@@ -39,6 +39,9 @@ type PlayerRepository interface {
 	GamePasswordHash(ctx context.Context, steamID uint64) (string, error)
 	UpdateGamePasswordHash(ctx context.Context, steamID uint64, encoded string) error
 	Inventory(ctx context.Context, steamID uint64) ([]domain.InventoryItem, error)
+	StardustEquipments(ctx context.Context, steamID uint64) ([]domain.StardustEquipment, error)
+	EquipStardust(ctx context.Context, steamID uint64, itemType, uniqueID string) error
+	UnequipStardust(ctx context.Context, steamID uint64, itemType, uniqueID string) error
 	Announcements(ctx context.Context) ([]domain.Announcement, error)
 	StoreItems(ctx context.Context) ([]domain.StoreItem, error)
 	Maps(ctx context.Context) ([]domain.MapResource, error)
@@ -76,6 +79,11 @@ type equipmentMutationRequest struct {
 	ProductID int64    `json:"productId"`
 	Modes     []string `json:"modes"`
 	Team      string   `json:"team"`
+}
+
+type stardustEquipmentRequest struct {
+	ItemType string `json:"itemType"`
+	UniqueID string `json:"uniqueId"`
 }
 
 type session struct {
@@ -147,6 +155,8 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/api/v1/me/equipment", h.handleEquipment)
 	mux.HandleFunc("/api/v1/me/equipment/equip", h.handleEquip)
 	mux.HandleFunc("/api/v1/me/equipment/unequip", h.handleUnequip)
+	mux.HandleFunc("/api/v1/me/stardust/equip", h.handleStardustEquip)
+	mux.HandleFunc("/api/v1/me/stardust/unequip", h.handleStardustUnequip)
 	mux.HandleFunc("/internal/v1/game-password", h.handleGamePassword)
 
 	return h.withLogging(h.withCORS(mux))
@@ -410,6 +420,64 @@ func (h *Handler) handleEquipmentMutation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	h.writeSuccess(w, profile)
+}
+
+func (h *Handler) handleStardustEquip(w http.ResponseWriter, r *http.Request) {
+	h.handleStardustEquipment(w, r, true)
+}
+
+func (h *Handler) handleStardustUnequip(w http.ResponseWriter, r *http.Request) {
+	h.handleStardustEquipment(w, r, false)
+}
+
+func (h *Handler) handleStardustEquipment(w http.ResponseWriter, r *http.Request, equip bool) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		h.writeError(w, http.StatusMethodNotAllowed, 4005, "请求方法不支持")
+		return
+	}
+	steamID, token, ok := h.requireSession(w, r)
+	if !ok {
+		return
+	}
+	if !h.verifyOperationPassword(w, r, steamID, token) {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var request stardustEquipmentRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		h.writeError(w, http.StatusBadRequest, 4001, "星尘装备请求格式无效")
+		return
+	}
+	request.ItemType = strings.TrimSpace(request.ItemType)
+	request.UniqueID = strings.TrimSpace(request.UniqueID)
+	if request.ItemType == "" || request.UniqueID == "" {
+		h.writeError(w, http.StatusBadRequest, 4001, "星尘装备请求缺少物品标识")
+		return
+	}
+
+	var err error
+	if equip {
+		err = h.players.EquipStardust(r.Context(), steamID, request.ItemType, request.UniqueID)
+	} else {
+		err = h.players.UnequipStardust(r.Context(), steamID, request.ItemType, request.UniqueID)
+	}
+	if err != nil {
+		h.logger.Error("apply stardust equipment", "equip", equip, "type", request.ItemType, "unique_id", request.UniqueID, "error", err)
+		h.writeError(w, http.StatusBadGateway, 5002, err.Error())
+		return
+	}
+
+	equipments, err := h.players.StardustEquipments(r.Context(), steamID)
+	if err != nil {
+		h.logger.Error("load stardust equipments", "error", err)
+		h.writeError(w, http.StatusBadGateway, 5002, "读取星尘装备配置失败")
+		return
+	}
+	h.writeSuccess(w, equipments)
 }
 
 func validateEquipmentModes(values []string) ([]string, error) {

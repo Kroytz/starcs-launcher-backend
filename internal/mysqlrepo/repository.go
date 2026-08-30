@@ -260,18 +260,23 @@ func (r *Repository) challengeInventory(ctx context.Context, steamID uint64) ([]
 	rows, err := r.challengeDB.QueryContext(ctx, `
 		SELECT c.item_type, c.unique_id, c.display_name, c.category_name,
 		       COUNT(*), MIN(i.DateOfPurchase),
-		       MAX(CASE WHEN i.DateOfExpiration < '1000-01-01 00:00:00' THEN NULL ELSE i.DateOfExpiration END)
+		       MAX(CASE WHEN i.DateOfExpiration < '1000-01-01 00:00:00' THEN NULL ELSE i.DateOfExpiration END),
+		       e.UniqueId IS NOT NULL
 		FROM starduststore_items AS i
 		INNER JOIN starduststore_catalog AS c
 		        ON BINARY c.item_type = BINARY i.Type
 		       AND BINARY c.unique_id = BINARY i.UniqueId
 		       AND c.enabled = 1
 		       AND (c.restricted_steam_id IS NULL OR c.restricted_steam_id = i.SteamID)
+		LEFT JOIN starduststore_equipments AS e
+		       ON e.SteamID = i.SteamID
+		      AND BINARY e.Type = BINARY c.item_type
+		      AND BINARY e.UniqueId = BINARY c.unique_id
 		WHERE i.SteamID = ?
 		  AND (i.DateOfExpiration IS NULL
 		       OR i.DateOfExpiration < '1000-01-01 00:00:00'
 		       OR i.DateOfExpiration > NOW())
-		GROUP BY c.item_type, c.unique_id, c.display_name, c.category_name, c.sort_order
+		GROUP BY c.item_type, c.unique_id, c.display_name, c.category_name, c.sort_order, e.UniqueId
 		ORDER BY c.sort_order, c.item_type, c.unique_id
 	`, steamID)
 	if err != nil {
@@ -285,28 +290,118 @@ func (r *Repository) challengeInventory(ctx context.Context, steamID uint64) ([]
 		var quantity int64
 		var acquiredAt time.Time
 		var expired sql.NullTime
-		if err := rows.Scan(&itemType, &uniqueID, &displayName, &category, &quantity, &acquiredAt, &expired); err != nil {
+		var equipped bool
+		if err := rows.Scan(&itemType, &uniqueID, &displayName, &category, &quantity, &acquiredAt, &expired, &equipped); err != nil {
 			return nil, fmt.Errorf("scan challenge inventory: %w", err)
 		}
 		_, icon := challengeCategory(itemType)
 		items = append(items, domain.InventoryItem{
-			ID:         "challenge-" + itemType + "-" + uniqueID,
-			Source:     "stardust",
-			UniqueID:   uniqueID,
-			Name:       displayName,
-			Type:       category,
-			Rarity:     "星尘",
-			Quantity:   quantity,
-			Icon:       icon,
-			Tone:       "from-secondary to-violet-600",
-			AcquiredAt: acquiredAt.Format(time.RFC3339),
-			ExpiresAt:  formatExpiry(expired),
+			ID:           "challenge-" + itemType + "-" + uniqueID,
+			Source:       "stardust",
+			UniqueID:     uniqueID,
+			Name:         displayName,
+			Type:         category,
+			Rarity:       "星尘",
+			Quantity:     quantity,
+			Icon:         icon,
+			Tone:         "from-secondary to-violet-600",
+			AcquiredAt:   acquiredAt.Format(time.RFC3339),
+			ExpiresAt:    formatExpiry(expired),
+			Equipped:     equipped,
+			StardustType: itemType,
 		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate challenge inventory: %w", err)
 	}
 	return items, nil
+}
+
+// StardustEquipments 返回该玩家当前已装备的全部星尘物品。
+func (r *Repository) StardustEquipments(ctx context.Context, steamID uint64) ([]domain.StardustEquipment, error) {
+	if r.challengeDB == nil {
+		return nil, errors.New("challenge database is not configured")
+	}
+	rows, err := r.challengeDB.QueryContext(ctx, `
+		SELECT Type, UniqueId, COALESCE(Slot, 0)
+		FROM starduststore_equipments
+		WHERE SteamID = ?
+		ORDER BY Type, UniqueId
+	`, steamID)
+	if err != nil {
+		return nil, fmt.Errorf("query stardust equipments: %w", err)
+	}
+	defer rows.Close()
+
+	equipments := make([]domain.StardustEquipment, 0)
+	for rows.Next() {
+		var equipment domain.StardustEquipment
+		if err := rows.Scan(&equipment.Type, &equipment.UniqueID, &equipment.Slot); err != nil {
+			return nil, fmt.Errorf("scan stardust equipment: %w", err)
+		}
+		equipments = append(equipments, equipment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate stardust equipments: %w", err)
+	}
+	return equipments, nil
+}
+
+// EquipStardust 装备一件星尘物品；同一 Type 互斥，先删除同 Type 旧装备再写入新装备。
+func (r *Repository) EquipStardust(ctx context.Context, steamID uint64, itemType, uniqueID string) error {
+	if r.challengeDB == nil {
+		return errors.New("challenge database is not configured")
+	}
+	var slot int
+	err := r.challengeDB.QueryRowContext(ctx, `
+		SELECT c.slot
+		FROM starduststore_items AS i
+		INNER JOIN starduststore_catalog AS c
+		        ON BINARY c.item_type = BINARY i.Type
+		       AND BINARY c.unique_id = BINARY i.UniqueId
+		       AND c.enabled = 1
+		       AND (c.restricted_steam_id IS NULL OR c.restricted_steam_id = i.SteamID)
+		WHERE i.SteamID = ?
+		  AND BINARY i.Type = BINARY ?
+		  AND BINARY i.UniqueId = BINARY ?
+		  AND (i.DateOfExpiration IS NULL
+		       OR i.DateOfExpiration < '1000-01-01 00:00:00'
+		       OR i.DateOfExpiration > NOW())
+		LIMIT 1
+	`, steamID, itemType, uniqueID).Scan(&slot)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("该物品不在当前玩家的有效星尘库存中")
+	}
+	if err != nil {
+		return fmt.Errorf("validate stardust item ownership: %w", err)
+	}
+
+	tx, err := r.challengeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin stardust equipment transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM starduststore_equipments WHERE SteamID = ? AND BINARY Type = BINARY ?`, steamID, itemType); err != nil {
+		return fmt.Errorf("clear stardust equipment type: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO starduststore_equipments (SteamID, Type, UniqueId, Slot) VALUES (?, ?, ?, ?)`, steamID, itemType, uniqueID, slot); err != nil {
+		return fmt.Errorf("insert stardust equipment: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit stardust equipment: %w", err)
+	}
+	return nil
+}
+
+// UnequipStardust 卸下一件星尘物品。
+func (r *Repository) UnequipStardust(ctx context.Context, steamID uint64, itemType, uniqueID string) error {
+	if r.challengeDB == nil {
+		return errors.New("challenge database is not configured")
+	}
+	if _, err := r.challengeDB.ExecContext(ctx, `DELETE FROM starduststore_equipments WHERE SteamID = ? AND BINARY Type = BINARY ? AND BINARY UniqueId = BINARY ?`, steamID, itemType, uniqueID); err != nil {
+		return fmt.Errorf("delete stardust equipment: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) Announcements(ctx context.Context) ([]domain.Announcement, error) {
@@ -508,7 +603,6 @@ func (r *Repository) challengeStoreItems(ctx context.Context) ([]domain.StoreIte
 			Category:        category,
 			PurchaseBackend: "challenge-stardust",
 			Title:           displayName,
-			Description:     "来自 DB_CHALLENGE 商品目录；购买将使用独立的星尘商店流程。",
 			Price:           price,
 			Icon:            icon,
 			Tone:            "from-secondary to-violet-600",

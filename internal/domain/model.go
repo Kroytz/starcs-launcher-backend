@@ -67,6 +67,15 @@ type InventoryItem struct {
 	UseLimitInfo string `json:"useLimitInfo"`
 	WeaponPrefab string `json:"weaponPrefab"`
 	WeaponType   string `json:"weaponType"`
+	Equipped     bool   `json:"equipped"`
+	StardustType string `json:"stardustType,omitempty"`
+}
+
+// StardustEquipment 表示 db_challenge 中一件已装备的星尘物品。
+type StardustEquipment struct {
+	Type     string `json:"type"`
+	UniqueID string `json:"uniqueId"`
+	Slot     int    `json:"slot"`
 }
 
 type Profile struct {
