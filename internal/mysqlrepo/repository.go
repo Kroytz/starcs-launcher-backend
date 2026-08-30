@@ -14,9 +14,13 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/starcs/star-launcher-backend/internal/domain"
+	"github.com/starcs/star-launcher-backend/internal/passwordauth"
 )
 
-var ErrInvalidCredentials = errors.New("invalid credentials")
+var (
+	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrPlayerNotFound     = errors.New("player not found")
+)
 
 type Repository struct {
 	db                        *sql.DB
@@ -86,21 +90,58 @@ func (r *Repository) Close() error {
 }
 
 func (r *Repository) Authenticate(ctx context.Context, steamID uint64, password string) error {
-	var matched int
-	err := r.db.QueryRowContext(ctx, `
-		SELECT EXISTS(
-			SELECT 1
-			FROM scs_user AS u
-			INNER JOIN scs_user_steamid AS us ON us.uid = u.uid
-			WHERE us.steamid = ? AND BINARY u.password = BINARY ?
-			LIMIT 1
-		)
-	`, steamID, password).Scan(&matched)
+	encoded, err := r.GamePasswordHash(ctx, steamID)
 	if err != nil {
-		return fmt.Errorf("query account: %w", err)
+		if errors.Is(err, ErrPlayerNotFound) {
+			return ErrInvalidCredentials
+		}
+		return err
 	}
-	if matched != 1 {
+	if encoded == "" {
 		return ErrInvalidCredentials
+	}
+	valid, err := passwordauth.Verify(password, encoded)
+	if err != nil {
+		return fmt.Errorf("verify game password hash: %w", err)
+	}
+	if !valid {
+		return ErrInvalidCredentials
+	}
+	return nil
+}
+
+func (r *Repository) GamePasswordHash(ctx context.Context, steamID uint64) (string, error) {
+	var encoded sql.NullString
+	err := r.db.QueryRowContext(ctx, `
+		SELECT game_password_hash
+		FROM star_user
+		WHERE steamid = ?
+		LIMIT 1
+	`, steamID).Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrPlayerNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("query game password hash: %w", err)
+	}
+	return encoded.String, nil
+}
+
+func (r *Repository) UpdateGamePasswordHash(ctx context.Context, steamID uint64, encoded string) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE star_user
+		SET game_password_hash = ?, game_password_updated_at = NOW(6)
+		WHERE steamid = ?
+	`, encoded, steamID)
+	if err != nil {
+		return fmt.Errorf("update game password hash: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read game password update result: %w", err)
+	}
+	if rows == 0 {
+		return ErrPlayerNotFound
 	}
 	return nil
 }

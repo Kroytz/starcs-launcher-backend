@@ -39,6 +39,10 @@ func main() {
 	if skipPasswordAuth {
 		logger.Warn("game password validation is disabled; Steam64-only read sessions are enabled")
 	}
+	gameAPIKey := strings.TrimSpace(os.Getenv("STAR_GAME_API_KEY"))
+	if gameAPIKey == "" {
+		logger.Warn("STAR_GAME_API_KEY is empty; the game-server password update endpoint is disabled")
+	}
 
 	var players api.PlayerRepository
 	dsn, databaseConfigured, err := config.DatabaseDSN()
@@ -76,7 +80,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.NewHandler(demo.NewStore(), players, logger, origins, skipPasswordAuth),
+		Handler:           api.NewHandler(demo.NewStore(), players, logger, origins, skipPasswordAuth, api.WithGameAPIKey(gameAPIKey)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,

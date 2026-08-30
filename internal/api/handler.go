@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -16,9 +17,15 @@ import (
 	"github.com/starcs/star-launcher-backend/internal/demo"
 	"github.com/starcs/star-launcher-backend/internal/domain"
 	"github.com/starcs/star-launcher-backend/internal/mysqlrepo"
+	"github.com/starcs/star-launcher-backend/internal/passwordauth"
 )
 
-const successCode = 2000
+const (
+	successCode          = 2000
+	reauthHeader         = "X-StarCS-Reauth"
+	gameAPIKeyHeader     = "X-Star-Api-Key"
+	credentialsStaleCode = 4011
+)
 
 type envelope struct {
 	Code int    `json:"code"`
@@ -28,6 +35,8 @@ type envelope struct {
 
 type PlayerRepository interface {
 	Authenticate(ctx context.Context, steamID uint64, password string) error
+	GamePasswordHash(ctx context.Context, steamID uint64) (string, error)
+	UpdateGamePasswordHash(ctx context.Context, steamID uint64, encoded string) error
 	Inventory(ctx context.Context, steamID uint64) ([]domain.InventoryItem, error)
 	Announcements(ctx context.Context) ([]domain.Announcement, error)
 	StoreItems(ctx context.Context) ([]domain.StoreItem, error)
@@ -46,6 +55,16 @@ type loginResponse struct {
 	domain.PlayerReadModel
 }
 
+type verifyPasswordRequest struct {
+	Password string `json:"password"`
+}
+
+type gamePasswordRequest struct {
+	SteamID         string `json:"steamId"`
+	CurrentPassword string `json:"currentPassword"`
+	NewPassword     string `json:"newPassword"`
+}
+
 type session struct {
 	steamID   uint64
 	expiresAt time.Time
@@ -57,11 +76,20 @@ type Handler struct {
 	logger           *slog.Logger
 	allowedOrigins   map[string]struct{}
 	skipPasswordAuth bool
+	gameAPIKey       string
 	sessionMu        sync.Mutex
 	sessions         map[string]session
 }
 
-func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger, allowedOrigins []string, skipPasswordAuth bool) http.Handler {
+type HandlerOption func(*Handler)
+
+func WithGameAPIKey(key string) HandlerOption {
+	return func(handler *Handler) {
+		handler.gameAPIKey = strings.TrimSpace(key)
+	}
+}
+
+func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger, allowedOrigins []string, skipPasswordAuth bool, options ...HandlerOption) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -73,6 +101,9 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 		allowedOrigins:   make(map[string]struct{}, len(allowedOrigins)),
 		skipPasswordAuth: skipPasswordAuth,
 		sessions:         make(map[string]session),
+	}
+	for _, option := range options {
+		option(h)
 	}
 	for _, origin := range allowedOrigins {
 		origin = strings.TrimSpace(origin)
@@ -89,8 +120,10 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/api/v1/store/items", h.handleStoreItems)
 	mux.HandleFunc("/api/v1/maps", h.handleMaps)
 	mux.HandleFunc("/api/v1/auth/login", h.handleLogin)
+	mux.HandleFunc("/api/v1/auth/verify", h.handleVerifyPassword)
 	mux.HandleFunc("/api/v1/me", h.handleAccount)
 	mux.HandleFunc("/api/v1/me/inventory", h.handleInventory)
+	mux.HandleFunc("/internal/v1/game-password", h.handleGamePassword)
 
 	return h.withLogging(h.withCORS(mux))
 }
@@ -212,8 +245,11 @@ func (h *Handler) handleInventory(w http.ResponseWriter, r *http.Request) {
 	if !h.requireGET(w, r) {
 		return
 	}
-	steamID, ok := h.requireSession(w, r)
+	steamID, token, ok := h.requireSession(w, r)
 	if !ok {
+		return
+	}
+	if !h.verifyOperationPassword(w, r, steamID, token) {
 		return
 	}
 	items, err := h.players.Inventory(r.Context(), steamID)
@@ -223,6 +259,109 @@ func (h *Handler) handleInventory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeSuccess(w, items)
+}
+
+func (h *Handler) handleVerifyPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		h.writeError(w, http.StatusMethodNotAllowed, 4005, "请求方法不支持")
+		return
+	}
+	steamID, token, ok := h.requireSession(w, r)
+	if !ok {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var request verifyPasswordRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		h.writeError(w, http.StatusBadRequest, 4001, "密码复验请求格式无效")
+		return
+	}
+	r.Header.Set(reauthHeader, request.Password)
+	if !h.verifyOperationPassword(w, r, steamID, token) {
+		return
+	}
+	h.writeSuccess(w, map[string]bool{"valid": true})
+}
+
+func (h *Handler) handleGamePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		h.writeError(w, http.StatusMethodNotAllowed, 4005, "请求方法不支持")
+		return
+	}
+	if h.players == nil {
+		h.writeError(w, http.StatusServiceUnavailable, 5003, "玩家数据库尚未配置")
+		return
+	}
+	providedKey := r.Header.Get(gameAPIKeyHeader)
+	if h.gameAPIKey == "" {
+		h.writeError(w, http.StatusServiceUnavailable, 5003, "游戏服密码接口尚未配置")
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(providedKey), []byte(h.gameAPIKey)) != 1 {
+		h.writeError(w, http.StatusUnauthorized, 4003, "游戏服接口认证失败")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	var request gamePasswordRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		h.writeError(w, http.StatusBadRequest, 4001, "改密请求格式无效")
+		return
+	}
+	steamID, err := parseSteamID(request.SteamID)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, 4001, "Steam64 格式无效")
+		return
+	}
+	if err := passwordauth.Validate(request.NewPassword); err != nil {
+		h.writeError(w, http.StatusBadRequest, 4001, "新密码须为 8 至 128 个 UTF-8 字节")
+		return
+	}
+
+	currentHash, err := h.players.GamePasswordHash(r.Context(), steamID)
+	if err != nil {
+		if errors.Is(err, mysqlrepo.ErrPlayerNotFound) {
+			h.writeError(w, http.StatusNotFound, 4004, "玩家账号不存在")
+			return
+		}
+		h.writeRepositoryError(w, "query current game password", err)
+		return
+	}
+	if currentHash != "" {
+		if strings.TrimSpace(request.CurrentPassword) == "" {
+			h.writeError(w, http.StatusBadRequest, 4001, "修改密码时必须提供当前密码")
+			return
+		}
+		if err := h.players.Authenticate(r.Context(), steamID, request.CurrentPassword); err != nil {
+			if errors.Is(err, mysqlrepo.ErrInvalidCredentials) {
+				h.writeError(w, http.StatusUnauthorized, 4003, "当前密码错误")
+				return
+			}
+			h.writeRepositoryError(w, "verify current game password", err)
+			return
+		}
+	}
+	encoded, err := passwordauth.Hash(request.NewPassword)
+	if err != nil {
+		h.logger.Error("hash new game password", "error", err)
+		h.writeError(w, http.StatusInternalServerError, 5000, "生成密码摘要失败")
+		return
+	}
+	if err := h.players.UpdateGamePasswordHash(r.Context(), steamID, encoded); err != nil {
+		if errors.Is(err, mysqlrepo.ErrPlayerNotFound) {
+			h.writeError(w, http.StatusNotFound, 4004, "玩家账号不存在")
+			return
+		}
+		h.writeRepositoryError(w, "update game password", err)
+		return
+	}
+	h.writeSuccess(w, map[string]bool{"updated": true})
 }
 
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -286,16 +425,16 @@ func (h *Handler) writeRepositoryError(w http.ResponseWriter, operation string, 
 	h.writeError(w, http.StatusServiceUnavailable, 5002, "只读数据服务暂时不可用")
 }
 
-func (h *Handler) requireSession(w http.ResponseWriter, r *http.Request) (uint64, bool) {
+func (h *Handler) requireSession(w http.ResponseWriter, r *http.Request) (uint64, string, bool) {
 	if h.players == nil {
 		h.writeError(w, http.StatusServiceUnavailable, 5003, "真实库存数据库尚未配置")
-		return 0, false
+		return 0, "", false
 	}
 	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
 	const prefix = "Bearer "
 	if !strings.HasPrefix(authorization, prefix) {
 		h.writeError(w, http.StatusUnauthorized, 4003, "请先登录")
-		return 0, false
+		return 0, "", false
 	}
 	token := strings.TrimSpace(strings.TrimPrefix(authorization, prefix))
 	h.sessionMu.Lock()
@@ -307,9 +446,33 @@ func (h *Handler) requireSession(w http.ResponseWriter, r *http.Request) (uint64
 	h.sessionMu.Unlock()
 	if !exists {
 		h.writeError(w, http.StatusUnauthorized, 4003, "登录会话无效或已过期")
-		return 0, false
+		return 0, "", false
 	}
-	return current.steamID, true
+	return current.steamID, token, true
+}
+
+func (h *Handler) verifyOperationPassword(w http.ResponseWriter, r *http.Request, steamID uint64, token string) bool {
+	if h.skipPasswordAuth {
+		return true
+	}
+	password := r.Header.Get(reauthHeader)
+	if password == "" {
+		h.writeError(w, http.StatusBadRequest, 4001, "此操作需要再次校验游戏内密码")
+		return false
+	}
+	if err := h.players.Authenticate(r.Context(), steamID, password); err != nil {
+		if errors.Is(err, mysqlrepo.ErrInvalidCredentials) {
+			h.sessionMu.Lock()
+			delete(h.sessions, token)
+			h.sessionMu.Unlock()
+			h.writeError(w, http.StatusUnauthorized, credentialsStaleCode, "游戏内密码已变更，请重新登录")
+			return false
+		}
+		h.logger.Error("reauthenticate player operation", "error", err)
+		h.writeError(w, http.StatusServiceUnavailable, 5002, "账号数据库暂时不可用")
+		return false
+	}
+	return true
 }
 
 func parseSteamID(value string) (uint64, error) {
@@ -362,7 +525,7 @@ func (h *Handler) withCORS(next http.Handler) http.Handler {
 		if _, ok := h.allowedOrigins[origin]; ok {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+reauthHeader)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		}
 		if r.Method == http.MethodOptions {

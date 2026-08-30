@@ -14,6 +14,7 @@ import (
 	"github.com/starcs/star-launcher-backend/internal/demo"
 	"github.com/starcs/star-launcher-backend/internal/domain"
 	"github.com/starcs/star-launcher-backend/internal/mysqlrepo"
+	"github.com/starcs/star-launcher-backend/internal/passwordauth"
 )
 
 type envelope struct {
@@ -34,6 +35,14 @@ func (fakePlayers) Authenticate(_ context.Context, steamID uint64, password stri
 		return nil
 	}
 	return mysqlrepo.ErrInvalidCredentials
+}
+
+func (fakePlayers) GamePasswordHash(_ context.Context, _ uint64) (string, error) {
+	return "", nil
+}
+
+func (fakePlayers) UpdateGamePasswordHash(_ context.Context, _ uint64, _ string) error {
+	return nil
 }
 
 func (fakePlayers) Inventory(_ context.Context, steamID uint64) ([]domain.InventoryItem, error) {
@@ -188,10 +197,114 @@ func TestLoginReturnsAuthenticatedInventory(t *testing.T) {
 
 	inventoryRequest := httptest.NewRequest(http.MethodGet, "/api/v1/me/inventory", nil)
 	inventoryRequest.Header.Set("Authorization", "Bearer "+login.Token)
+	inventoryRequest.Header.Set("X-StarCS-Reauth", "valid-password")
 	inventoryResponse := httptest.NewRecorder()
 	handler.ServeHTTP(inventoryResponse, inventoryRequest)
 	if inventoryResponse.Code != http.StatusOK {
 		t.Fatalf("expected inventory status 200, got %d", inventoryResponse.Code)
+	}
+}
+
+func TestWrongOperationPasswordRevokesSession(t *testing.T) {
+	handler := newAuthenticatedHandler()
+	loginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"steamId":"76561198000000001","password":"valid-password"}`))
+	loginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(loginResponse, loginRequest)
+	var body envelope
+	if err := json.NewDecoder(loginResponse.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	var login struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body.Data, &login); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify", strings.NewReader(`{"password":"changed-password"}`))
+	request.Header.Set("Authorization", "Bearer "+login.Token)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d: %s", response.Code, response.Body.String())
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != 4011 {
+		t.Fatalf("expected stale credentials code 4011, got %d", body.Code)
+	}
+
+	retry := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify", strings.NewReader(`{"password":"valid-password"}`))
+	retry.Header.Set("Authorization", "Bearer "+login.Token)
+	retryResponse := httptest.NewRecorder()
+	handler.ServeHTTP(retryResponse, retry)
+	if retryResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked token should stay unauthorized, got %d", retryResponse.Code)
+	}
+}
+
+type mutablePasswordPlayers struct {
+	fakePlayers
+	hash string
+}
+
+func (players *mutablePasswordPlayers) Authenticate(_ context.Context, steamID uint64, password string) error {
+	if steamID != 76561198000000001 || players.hash == "" {
+		return mysqlrepo.ErrInvalidCredentials
+	}
+	valid, err := passwordauth.Verify(password, players.hash)
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return mysqlrepo.ErrInvalidCredentials
+	}
+	return nil
+}
+
+func (players *mutablePasswordPlayers) GamePasswordHash(_ context.Context, steamID uint64) (string, error) {
+	if steamID != 76561198000000001 {
+		return "", mysqlrepo.ErrPlayerNotFound
+	}
+	return players.hash, nil
+}
+
+func (players *mutablePasswordPlayers) UpdateGamePasswordHash(_ context.Context, steamID uint64, encoded string) error {
+	if steamID != 76561198000000001 {
+		return mysqlrepo.ErrPlayerNotFound
+	}
+	players.hash = encoded
+	return nil
+}
+
+func TestGamePasswordEndpointSetsAndChangesPassword(t *testing.T) {
+	players := &mutablePasswordPlayers{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := api.NewHandler(demo.NewStore(), players, logger, nil, false, api.WithGameAPIKey("game-secret"))
+
+	setRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/game-password", strings.NewReader(`{"steamId":"76561198000000001","newPassword":"first-password"}`))
+	setRequest.Header.Set("X-Star-Api-Key", "game-secret")
+	setResponse := httptest.NewRecorder()
+	handler.ServeHTTP(setResponse, setRequest)
+	if setResponse.Code != http.StatusOK {
+		t.Fatalf("initial password set failed: %d %s", setResponse.Code, setResponse.Body.String())
+	}
+	valid, err := passwordauth.Verify("first-password", players.hash)
+	if err != nil || !valid {
+		t.Fatalf("stored initial hash is invalid: valid=%v err=%v", valid, err)
+	}
+
+	changeRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/game-password", strings.NewReader(`{"steamId":"76561198000000001","currentPassword":"first-password","newPassword":"second-password"}`))
+	changeRequest.Header.Set("X-Star-Api-Key", "game-secret")
+	changeResponse := httptest.NewRecorder()
+	handler.ServeHTTP(changeResponse, changeRequest)
+	if changeResponse.Code != http.StatusOK {
+		t.Fatalf("password change failed: %d %s", changeResponse.Code, changeResponse.Body.String())
+	}
+	valid, err = passwordauth.Verify("second-password", players.hash)
+	if err != nil || !valid {
+		t.Fatalf("stored changed hash is invalid: valid=%v err=%v", valid, err)
 	}
 }
 
