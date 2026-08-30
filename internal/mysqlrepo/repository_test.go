@@ -51,6 +51,9 @@ func TestDisplayTypeMapsItemCardsAndCharacters(t *testing.T) {
 	if category, icon := displayType("Character", 2); category != "集字" || icon != "trophy" {
 		t.Fatalf("unexpected Character mapping: %q %q", category, icon)
 	}
+	if category, icon := displayType("PlayerSkin", 1); category != "角色外观" || icon != "user-round" {
+		t.Fatalf("unexpected PlayerSkin mapping: %q %q", category, icon)
+	}
 }
 
 func TestInventoryQuantityTreatsPermanentRowsAsOwned(t *testing.T) {

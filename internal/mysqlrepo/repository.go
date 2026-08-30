@@ -727,8 +727,8 @@ func displayType(label string, productType int) (string, string) {
 		return "道具卡", "package"
 	case strings.Contains(normalized, "character"):
 		return "集字", "trophy"
-	case strings.Contains(normalized, "playermodel"), strings.Contains(normalized, "player_skin"), strings.Contains(normalized, "agent"):
-		return "玩家外观", "user-round"
+	case strings.Contains(normalized, "playerskin"), strings.Contains(normalized, "playermodel"), strings.Contains(normalized, "player_skin"), strings.Contains(normalized, "agent"):
+		return "角色外观", "user-round"
 	case strings.Contains(normalized, "weapon"), strings.Contains(normalized, "weaponmodel"):
 		return "武器外观", "zap"
 	case productType == 2:
