@@ -74,6 +74,10 @@ func (fakePlayers) PurchaseStarlight(_ context.Context, _ uint64, _ int64) (int6
 	return 0, nil
 }
 
+func (fakePlayers) PurchaseStardust(_ context.Context, _ uint64, _, _ string) (int64, error) {
+	return 0, nil
+}
+
 func (fakePlayers) EquipStardust(_ context.Context, _ uint64, _, _ string) error {
 	return nil
 }
@@ -697,6 +701,92 @@ func TestStarlightPurchase(t *testing.T) {
 
 func TestStarlightPurchaseRequiresLogin(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/me/store/purchase", strings.NewReader(`{"pricingId":1}`))
+	response := httptest.NewRecorder()
+	newAuthenticatedHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", response.Code)
+	}
+}
+
+func (players *purchaseTrackingPlayers) PurchaseStardust(_ context.Context, _ uint64, itemType, uniqueID string) (int64, error) {
+	if uniqueID == "not-for-sale" {
+		return 0, mysqlrepo.ErrPricingNotFound
+	}
+	if players.balance < 50 {
+		return 0, mysqlrepo.ErrInsufficientStardust
+	}
+	players.balance -= 50
+	return players.balance, nil
+}
+
+func TestStardustPurchase(t *testing.T) {
+	players := &purchaseTrackingPlayers{balance: 120}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := api.NewHandler(demo.NewStore(), players, logger, nil, false)
+	token := authenticateTestPlayer(t, handler)
+
+	call := func(body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/me/stardust/purchase", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("X-StarCS-Reauth", "valid-password")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	response := call(`{"itemType":"chatcolor","uniqueId":"red"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("stardust purchase failed: %d %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			Stardust   int64              `json:"stardust"`
+			Inventory  []domain.InventoryItem `json:"inventory"`
+			StoreItems []domain.StoreItem `json:"storeItems"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode stardust purchase response: %v", err)
+	}
+	if payload.Data.Stardust != 70 {
+		t.Fatalf("expected stardust 70, got %d", payload.Data.Stardust)
+	}
+	if len(payload.Data.StoreItems) == 0 {
+		t.Fatalf("expected refreshed store items in stardust purchase response")
+	}
+
+	// 余额不足：120 - 50 - 50 = 20 < 50
+	_ = call(`{"itemType":"chatcolor","uniqueId":"blue"}`)
+	response = call(`{"itemType":"chatcolor","uniqueId":"green"}`)
+	var insufficient struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &insufficient); err != nil {
+		t.Fatalf("decode insufficient response: %v", err)
+	}
+	if insufficient.Code == 2000 || insufficient.Msg != "星尘余额不足" {
+		t.Fatalf("expected insufficient stardust error, got %+v", insufficient)
+	}
+
+	// 未上架的物品
+	response = call(`{"itemType":"chatcolor","uniqueId":"not-for-sale"}`)
+	var notFound struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &notFound); err != nil {
+		t.Fatalf("decode not-found response: %v", err)
+	}
+	if notFound.Code == 2000 || notFound.Msg != "该商品不可用或已下架" {
+		t.Fatalf("expected pricing not found error, got %+v", notFound)
+	}
+}
+
+func TestStardustPurchaseRequiresLogin(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/me/stardust/purchase", strings.NewReader(`{"itemType":"chatcolor","uniqueId":"red"}`))
 	response := httptest.NewRecorder()
 	newAuthenticatedHandler().ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {

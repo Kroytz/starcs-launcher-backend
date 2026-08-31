@@ -48,6 +48,7 @@ type StoreItem struct {
 	Enabled         bool   `json:"enabled"`
 	Sort            int    `json:"sort"`
 	ImageURL        string `json:"imageUrl"`
+	StardustType    string `json:"stardustType,omitempty"`
 }
 
 type InventoryItem struct {
@@ -86,6 +87,13 @@ type StarlightPurchaseResult struct {
 	Inventory       []InventoryItem       `json:"inventory"`
 	PurchaseHistory []PurchaseHistoryItem `json:"purchaseHistory"`
 	StoreItems      []StoreItem           `json:"storeItems"`
+}
+
+// StardustPurchaseResult 星尘商店购买成功后的最新账号状态。
+type StardustPurchaseResult struct {
+	Stardust   int64           `json:"stardust"`
+	Inventory  []InventoryItem `json:"inventory"`
+	StoreItems []StoreItem     `json:"storeItems"`
 }
 
 type Profile struct {

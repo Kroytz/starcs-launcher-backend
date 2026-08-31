@@ -41,6 +41,7 @@ type PlayerRepository interface {
 	Inventory(ctx context.Context, steamID uint64) ([]domain.InventoryItem, error)
 	PurchaseHistory(ctx context.Context, steamID uint64) ([]domain.PurchaseHistoryItem, error)
 	PurchaseStarlight(ctx context.Context, steamID uint64, pricingID int64) (int64, error)
+	PurchaseStardust(ctx context.Context, steamID uint64, itemType, uniqueID string) (int64, error)
 	StardustEquipments(ctx context.Context, steamID uint64) ([]domain.StardustEquipment, error)
 	EquipStardust(ctx context.Context, steamID uint64, itemType, uniqueID string) error
 	UnequipStardust(ctx context.Context, steamID uint64, itemType, uniqueID string) error
@@ -91,6 +92,11 @@ type stardustEquipmentRequest struct {
 
 type starlightPurchaseRequest struct {
 	PricingID int64 `json:"pricingId"`
+}
+
+type stardustPurchaseRequest struct {
+	ItemType string `json:"itemType"`
+	UniqueID string `json:"uniqueId"`
 }
 
 type session struct {
@@ -165,6 +171,7 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/api/v1/me/stardust/equip", h.handleStardustEquip)
 	mux.HandleFunc("/api/v1/me/stardust/unequip", h.handleStardustUnequip)
 	mux.HandleFunc("/api/v1/me/store/purchase", h.handleStarlightPurchase)
+	mux.HandleFunc("/api/v1/me/stardust/purchase", h.handleStardustPurchase)
 	mux.HandleFunc("/internal/v1/game-password", h.handleGamePassword)
 
 	return h.withLogging(h.withCORS(mux))
@@ -500,6 +507,66 @@ func (h *Handler) handleStarlightPurchase(w http.ResponseWriter, r *http.Request
 		return
 	}
 	h.writeSuccess(w, domain.StarlightPurchaseResult{Starlight: starlight, Inventory: inventory, PurchaseHistory: history, StoreItems: storeItems})
+}
+
+func (h *Handler) handleStardustPurchase(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		h.writeError(w, http.StatusMethodNotAllowed, 4005, "请求方法不支持")
+		return
+	}
+	steamID, token, ok := h.requireSession(w, r)
+	if !ok {
+		return
+	}
+	if !h.verifyOperationPassword(w, r, steamID, token) {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var request stardustPurchaseRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		h.writeError(w, http.StatusBadRequest, 4001, "购买请求格式无效")
+		return
+	}
+	request.ItemType = strings.TrimSpace(request.ItemType)
+	request.UniqueID = strings.TrimSpace(request.UniqueID)
+	if request.ItemType == "" || request.UniqueID == "" {
+		h.writeError(w, http.StatusBadRequest, 4001, "购买请求缺少物品标识")
+		return
+	}
+
+	stardust, err := h.players.PurchaseStardust(r.Context(), steamID, request.ItemType, request.UniqueID)
+	if err != nil {
+		switch {
+		case errors.Is(err, mysqlrepo.ErrPricingNotFound):
+			h.writeBusinessError(w, 4004, "该商品不可用或已下架")
+		case errors.Is(err, mysqlrepo.ErrInsufficientStardust):
+			h.writeBusinessError(w, 4002, "星尘余额不足")
+		case errors.Is(err, mysqlrepo.ErrProductAlreadyOwned):
+			h.writeBusinessError(w, 4002, "已拥有该物品，无需重复购买")
+		default:
+			h.logger.Error("purchase stardust item", "type", request.ItemType, "unique_id", request.UniqueID, "error", err)
+			h.writeError(w, http.StatusBadGateway, 5002, "购买失败，请稍后重试")
+		}
+		return
+	}
+
+	inventory, err := h.players.Inventory(r.Context(), steamID)
+	if err != nil {
+		h.logger.Error("load inventory after stardust purchase", "error", err)
+		h.writeError(w, http.StatusBadGateway, 5002, "购买成功，但刷新库存失败")
+		return
+	}
+	storeItems, err := h.players.StoreItemsForPlayer(r.Context(), steamID)
+	if err != nil {
+		h.logger.Error("load store items after stardust purchase", "error", err)
+		h.writeError(w, http.StatusBadGateway, 5002, "购买成功，但刷新商城列表失败")
+		return
+	}
+	h.writeSuccess(w, domain.StardustPurchaseResult{Stardust: stardust, Inventory: inventory, StoreItems: storeItems})
 }
 
 func (h *Handler) handleStardustEquipment(w http.ResponseWriter, r *http.Request, equip bool) {

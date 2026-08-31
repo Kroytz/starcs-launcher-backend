@@ -22,6 +22,7 @@ var (
 	ErrPlayerNotFound        = errors.New("player not found")
 	ErrPricingNotFound       = errors.New("pricing not found")
 	ErrInsufficientStarlight = errors.New("insufficient starlight")
+	ErrInsufficientStardust  = errors.New("insufficient stardust")
 	ErrProductAlreadyOwned   = errors.New("product already owned")
 	ErrPermanentVersionOwned = errors.New("permanent version already owned")
 )
@@ -409,8 +410,8 @@ func (r *Repository) UnequipStardust(ctx context.Context, steamID uint64, itemTy
 }
 
 // PurchaseStarlight 用星光购买一个星光商城价格档位：校验档位与余额，事务内扣星光、发库存、写购买历史，返回购买后的星光余额。
-// 期限型商品重复购买时在 max(当前到期时间, 现在) 的基础上累加时长；限定商品不可重复购买；
-// 已持有永久版本（expired IS NULL）时，永久档与期限档都拒绝重复购买，防止白扣星光。
+// 与 StarLightStore 插件行为对齐：永久物品的 expired 写 '9000-01-01' 哨兵；期限型重复购买时未过期则累加时长、已过期则从现在重新计算；
+// 已持有永久版本（expired 为 NULL 或 >= '9000-01-01'）时永久档与期限档都拒绝重复购买；限定型（type=3）不可购买。
 func (r *Repository) PurchaseStarlight(ctx context.Context, steamID uint64, pricingID int64) (int64, error) {
 	var (
 		productID   int64
@@ -420,11 +421,12 @@ func (r *Repository) PurchaseStarlight(ctx context.Context, steamID uint64, pric
 		productType int
 		productName string
 	)
+	// 与插件一致：可售性只看价格档位 state，不看 sls_product.state（该字段已被插件废弃）
 	err := r.db.QueryRowContext(ctx, `
 		SELECT pp.product_id, pp.price, COALESCE(pp.days, 0), COALESCE(pp.quantity, 1), p.type, p.name
 		FROM sls_product_pricing AS pp
 		INNER JOIN sls_product AS p ON p.id = pp.product_id
-		WHERE pp.id = ? AND pp.state = 1 AND pp.currency_id = 1 AND p.state = 1
+		WHERE pp.id = ? AND pp.state = 1 AND pp.currency_id = 1
 		LIMIT 1
 	`, pricingID).Scan(&productID, &price, &days, &quantity, &productType, &productName)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -433,7 +435,12 @@ func (r *Repository) PurchaseStarlight(ctx context.Context, steamID uint64, pric
 	if err != nil {
 		return 0, fmt.Errorf("query starlight pricing: %w", err)
 	}
-	if price <= 0 || quantity <= 0 {
+	if productType == 3 {
+		// 限定型：插件按 UseLimit 动态发放，不进购买流程
+		return 0, ErrPricingNotFound
+	}
+	// 启动器暂不允许 0 元购（插件允许，这里主动收紧）
+	if price <= 0 || (productType == 2 && quantity <= 0) {
 		return 0, ErrPricingNotFound
 	}
 
@@ -456,25 +463,21 @@ func (r *Repository) PurchaseStarlight(ctx context.Context, steamID uint64, pric
 	}
 
 	permanent := productType != 2 && days <= 0
-	var existingNumber int64
-	var existingExpired sql.NullTime
-	err = tx.QueryRowContext(ctx, `SELECT number, expired FROM sls_player_inventory WHERE steamid = ? AND product_id = ? LIMIT 1 FOR UPDATE`, steamID, productID).Scan(&existingNumber, &existingExpired)
+	var permanentOwned bool
+	err = tx.QueryRowContext(ctx, `
+		SELECT (expired IS NULL OR expired >= '9000-01-01 00:00:00')
+		FROM sls_player_inventory
+		WHERE steamid = ? AND product_id = ?
+		LIMIT 1 FOR UPDATE
+	`, steamID, productID).Scan(&permanentOwned)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, fmt.Errorf("query existing inventory entry: %w", err)
 	}
-	if err == nil {
-		// 限定型不可重复购买
-		if productType == 3 {
+	if err == nil && productType != 2 && permanentOwned {
+		if permanent {
 			return 0, ErrProductAlreadyOwned
 		}
-		// 已持有长期版本时拒绝重复购买：expired 为 NULL 或超过一年（星光库永久物品常写 9999-12-31 哨兵时间）；数量型不受限
-		permanentOwned := !existingExpired.Valid || existingExpired.Time.After(time.Now().AddDate(1, 0, 0))
-		if productType != 2 && permanentOwned {
-			if permanent {
-				return 0, ErrProductAlreadyOwned
-			}
-			return 0, ErrPermanentVersionOwned
-		}
+		return 0, ErrPermanentVersionOwned
 	}
 
 	if _, err := tx.ExecContext(ctx, `UPDATE star_user SET starlight = starlight - ? WHERE steamid = ?`, price, steamID); err != nil {
@@ -483,7 +486,7 @@ func (r *Repository) PurchaseStarlight(ctx context.Context, steamID uint64, pric
 
 	switch {
 	case productType == 2:
-		// 数量型：累加数量
+		// 数量型：number 累加，expired 恒为 NULL
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO sls_player_inventory (steamid, product_id, number, expired, updated, created)
 			VALUES (?, ?, ?, NULL, NOW(), NOW())
@@ -492,22 +495,26 @@ func (r *Repository) PurchaseStarlight(ctx context.Context, steamID uint64, pric
 			return 0, fmt.Errorf("grant quantity product: %w", err)
 		}
 	case permanent:
-		// 永久期限档或限定型：永久持有
+		// 永久档：expired 写 '9000-01-01' 哨兵（与插件 SetPermanent 一致）；过期后重买时重置 created
+		// 注意 ON DUPLICATE KEY UPDATE 从左到右求值，created 的判定必须排在 expired 赋值之前才能读到旧值
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO sls_player_inventory (steamid, product_id, number, expired, updated, created)
-			VALUES (?, ?, 1, NULL, NOW(), NOW())
-			ON DUPLICATE KEY UPDATE number = IF(number < 1, 1, number), expired = NULL, updated = NOW()
+			VALUES (?, ?, 0, '9000-01-01 00:00:00', NOW(), NOW())
+			ON DUPLICATE KEY UPDATE
+				created = IF(expired IS NOT NULL AND expired < NOW(), NOW(), created),
+				expired = '9000-01-01 00:00:00',
+				updated = NOW()
 		`, steamID, productID); err != nil {
 			return 0, fmt.Errorf("grant permanent product: %w", err)
 		}
 	default:
-		// 期限型：在 max(当前到期时间, 现在) 上累加时长；已持有永久版本时不降级
+		// 期限型：未过期在原到期时间上累加，已过期从现在重新计算并重置 created（与插件删除重建等效）
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO sls_player_inventory (steamid, product_id, number, expired, updated, created)
-			VALUES (?, ?, 1, DATE_ADD(NOW(), INTERVAL ? DAY), NOW(), NOW())
+			VALUES (?, ?, 0, DATE_ADD(NOW(), INTERVAL ? DAY), NOW(), NOW())
 			ON DUPLICATE KEY UPDATE
-				number = IF(number < 1, 1, number),
-				expired = IF(expired IS NULL, NULL, DATE_ADD(GREATEST(expired, NOW()), INTERVAL ? DAY)),
+				created = IF(expired IS NOT NULL AND expired < NOW(), NOW(), created),
+				expired = DATE_ADD(GREATEST(COALESCE(expired, NOW()), NOW()), INTERVAL ? DAY),
 				updated = NOW()
 		`, steamID, productID, days, days); err != nil {
 			return 0, fmt.Errorf("grant timed product: %w", err)
@@ -527,7 +534,7 @@ func (r *Repository) PurchaseStarlight(ctx context.Context, steamID uint64, pric
 	balanceAfter := balance - price
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO sls_purchase_history (steam_id, product_id, product_name, currency_type, quantity, days, total_price, balance_before, balance_after, state, description, created)
-		VALUES (?, ?, ?, 'starlight', ?, ?, ?, ?, ?, 1, '启动器购买', NOW())
+		VALUES (?, ?, ?, '星光', ?, ?, ?, ?, ?, 1, '', NOW())
 	`, steamID, productID, productName, historyQuantity, historyDays, price, balance, balanceAfter); err != nil {
 		return 0, fmt.Errorf("record purchase history: %w", err)
 	}
@@ -536,6 +543,88 @@ func (r *Repository) PurchaseStarlight(ctx context.Context, steamID uint64, pric
 		return 0, fmt.Errorf("commit starlight purchase: %w", err)
 	}
 	return balanceAfter, nil
+}
+
+// PurchaseStardust 用星尘购买一件星尘商店物品：校验目录与余额，事务内扣星尘、写入物品，返回购买后的星尘余额。
+// 星尘物品每件独立成行、永久持有（到期时间写 '0001-01-01' 哨兵），同 Type+UniqueId 已持有时拒绝重复购买。
+func (r *Repository) PurchaseStardust(ctx context.Context, steamID uint64, itemType, uniqueID string) (int64, error) {
+	if r.challengeDB == nil {
+		return 0, errors.New("challenge database is not configured")
+	}
+	var price int64
+	err := r.challengeDB.QueryRowContext(ctx, `
+		SELECT price
+		FROM starduststore_catalog
+		WHERE BINARY item_type = BINARY ?
+		  AND BINARY unique_id = BINARY ?
+		  AND enabled = 1 AND purchasable = 1 AND hidden = 0
+		  AND (restricted_steam_id IS NULL OR restricted_steam_id = ?)
+		LIMIT 1
+	`, itemType, uniqueID, steamID).Scan(&price)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrPricingNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("query stardust catalog item: %w", err)
+	}
+	// 启动器暂不允许 0 元购
+	if price <= 0 {
+		return 0, ErrPricingNotFound
+	}
+
+	tx, err := r.challengeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin stardust purchase transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 已持有同 Type+UniqueId 的有效物品时拒绝重复购买
+	var owned bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM starduststore_items
+			WHERE SteamID = ?
+			  AND BINARY Type = BINARY ?
+			  AND BINARY UniqueId = BINARY ?
+			  AND (DateOfExpiration IS NULL
+			       OR DateOfExpiration < '1000-01-01 00:00:00'
+			       OR DateOfExpiration > NOW())
+		)
+	`, steamID, itemType, uniqueID).Scan(&owned); err != nil {
+		return 0, fmt.Errorf("check stardust item ownership: %w", err)
+	}
+	if owned {
+		return 0, ErrProductAlreadyOwned
+	}
+
+	// 从未进入挑战服的玩家没有记录，视为余额 0
+	var balance int64
+	playerExists := true
+	err = tx.QueryRowContext(ctx, `SELECT StarDust FROM starduststore_players WHERE SteamID = ? ORDER BY id DESC LIMIT 1 FOR UPDATE`, steamID).Scan(&balance)
+	if errors.Is(err, sql.ErrNoRows) {
+		balance = 0
+		playerExists = false
+	} else if err != nil {
+		return 0, fmt.Errorf("lock stardust balance: %w", err)
+	}
+	if balance < price {
+		return 0, ErrInsufficientStardust
+	}
+	if playerExists {
+		if _, err := tx.ExecContext(ctx, `UPDATE starduststore_players SET StarDust = StarDust - ? WHERE SteamID = ?`, price, steamID); err != nil {
+			return 0, fmt.Errorf("deduct stardust: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO starduststore_items (SteamID, Price, Type, UniqueId, DateOfPurchase, DateOfExpiration)
+		VALUES (?, ?, ?, ?, NOW(), '0001-01-01 00:00:00')
+	`, steamID, price, itemType, uniqueID); err != nil {
+		return 0, fmt.Errorf("grant stardust item: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit stardust purchase: %w", err)
+	}
+	return balance - price, nil
 }
 
 func (r *Repository) Announcements(ctx context.Context) ([]domain.Announcement, error) {
@@ -612,7 +701,7 @@ func (r *Repository) StoreItems(ctx context.Context) ([]domain.StoreItem, error)
 		)
 		LEFT JOIN scs_file AS f ON f.id = pv.file_id
 		WHERE pp.state = 1 AND pp.currency_id = 1
-		  AND p.state = 1 AND p.show_state IN (1, 2)
+		  AND p.show_state IN (1, 2)
 		  AND LOWER(COALESCE(p.label, '')) NOT LIKE '%starforge%'
 		ORDER BY pp.sort ASC, p.rarity_id DESC, p.id ASC
 	`)
@@ -666,8 +755,9 @@ func (r *Repository) StoreItems(ctx context.Context) ([]domain.StoreItem, error)
 	return items, nil
 }
 
-// StoreItemsForPlayer 返回面向指定玩家的商城列表：已持有长期版本的非数量型星光商品会被隐藏，
-// 与 PurchaseStarlight 的重复购买拦截保持同一口径（expired 为 NULL 或超过一年）。
+// StoreItemsForPlayer 返回面向指定玩家的商城列表：已持有永久版本（expired 为 NULL 或 >= '9000-01-01' 哨兵）的
+// 非数量型星光商品会被隐藏，与 StarLightStore 插件的商店可见性及 PurchaseStarlight 的拦截保持同一口径；
+// 星尘物品每件只能持有一份，已持有的也一并隐藏。
 func (r *Repository) StoreItemsForPlayer(ctx context.Context, steamID uint64) ([]domain.StoreItem, error) {
 	items, err := r.StoreItems(ctx)
 	if err != nil {
@@ -679,7 +769,7 @@ func (r *Repository) StoreItemsForPlayer(ctx context.Context, steamID uint64) ([
 		INNER JOIN sls_product AS p ON p.id = i.product_id
 		WHERE i.steamid = ?
 		  AND p.type != 2
-		  AND (i.expired IS NULL OR i.expired > DATE_ADD(NOW(), INTERVAL 1 YEAR))
+		  AND (i.expired IS NULL OR i.expired >= '9000-01-01 00:00:00')
 	`, steamID)
 	if err != nil {
 		return nil, fmt.Errorf("query permanently owned products: %w", err)
@@ -696,16 +786,48 @@ func (r *Repository) StoreItemsForPlayer(ctx context.Context, steamID uint64) ([
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate permanently owned products: %w", err)
 	}
-	if len(owned) == 0 {
+
+	ownedStardust := make(map[string]struct{})
+	if r.challengeDB != nil && r.challengeCatalogAvailable {
+		stardustRows, err := r.challengeDB.QueryContext(ctx, `
+			SELECT Type, UniqueId
+			FROM starduststore_items
+			WHERE SteamID = ?
+			  AND (DateOfExpiration IS NULL
+			       OR DateOfExpiration < '1000-01-01 00:00:00'
+			       OR DateOfExpiration > NOW())
+		`, steamID)
+		if err != nil {
+			return nil, fmt.Errorf("query owned stardust items: %w", err)
+		}
+		defer stardustRows.Close()
+		for stardustRows.Next() {
+			var itemType, uniqueID string
+			if err := stardustRows.Scan(&itemType, &uniqueID); err != nil {
+				return nil, fmt.Errorf("scan owned stardust item: %w", err)
+			}
+			ownedStardust[itemType+"\x1f"+uniqueID] = struct{}{}
+		}
+		if err := stardustRows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate owned stardust items: %w", err)
+		}
+	}
+
+	if len(owned) == 0 && len(ownedStardust) == 0 {
 		return items, nil
 	}
 	filtered := items[:0]
 	for _, item := range items {
-		if item.PurchaseBackend == "star-product" {
+		switch item.PurchaseBackend {
+		case "star-product":
 			if productID, parseErr := strconv.ParseInt(item.ExternalID, 10, 64); parseErr == nil {
 				if _, hidden := owned[productID]; hidden {
 					continue
 				}
+			}
+		case "challenge-stardust":
+			if _, hidden := ownedStardust[item.StardustType+"\x1f"+item.ExternalID]; hidden {
+				continue
 			}
 		}
 		filtered = append(filtered, item)
@@ -793,6 +915,7 @@ func (r *Repository) challengeStoreItems(ctx context.Context) ([]domain.StoreIte
 			Tag:             category,
 			Enabled:         true,
 			Sort:            sortOrder,
+			StardustType:    itemType,
 		})
 	}
 	if err := rows.Err(); err != nil {
