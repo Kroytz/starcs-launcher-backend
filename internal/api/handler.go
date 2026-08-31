@@ -50,6 +50,7 @@ type PlayerRepository interface {
 	StoreItemsForPlayer(ctx context.Context, steamID uint64) ([]domain.StoreItem, error)
 	Maps(ctx context.Context) ([]domain.MapResource, error)
 	WorkshopPacks(ctx context.Context, mode string) ([]domain.WorkshopPack, error)
+	LatestLauncherRelease(ctx context.Context) (domain.LauncherRelease, error)
 	PlayerReadModel(ctx context.Context, steamID uint64) (domain.PlayerReadModel, error)
 }
 
@@ -161,6 +162,8 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/api/v1/store/items", h.handleStoreItems)
 	mux.HandleFunc("/api/v1/maps", h.handleMaps)
 	mux.HandleFunc("/api/v1/workshop-packs", h.handleWorkshopPacks)
+	mux.HandleFunc("/api/v1/launcher/update-policy", h.handleLauncherUpdatePolicy)
+	mux.HandleFunc("/api/v1/launcher/manifest", h.handleLauncherUpdateManifest)
 	mux.HandleFunc("/api/v1/auth/login", h.handleLogin)
 	mux.HandleFunc("/api/v1/auth/verify", h.handleVerifyPassword)
 	mux.HandleFunc("/api/v1/me", h.handleAccount)
@@ -314,6 +317,86 @@ func validModeCode(mode string) bool {
 		}
 	}
 	return true
+}
+
+// handleLauncherUpdatePolicy 返回最新发布的更新策略（信封格式，供启动器 Rust 命令消费，
+// 用于决定普通/强制更新弹窗以及更新完成后的 changelog 展示）。
+func (h *Handler) handleLauncherUpdatePolicy(w http.ResponseWriter, r *http.Request) {
+	if !h.requireGET(w, r) {
+		return
+	}
+	if h.players == nil {
+		h.writeError(w, http.StatusNotFound, 4004, "暂无发布版本")
+		return
+	}
+	release, err := h.players.LatestLauncherRelease(r.Context())
+	if err != nil {
+		h.writeRepositoryError(w, "query latest launcher release", err)
+		return
+	}
+	if release.Version == "" {
+		h.writeError(w, http.StatusNotFound, 4004, "暂无发布版本")
+		return
+	}
+	h.writeSuccess(w, map[string]any{
+		"version":   release.Version,
+		"mandatory": release.Mandatory,
+		"changelog": release.Changelog,
+		"pubDate":   release.PubDate.UTC().Format(time.RFC3339),
+	})
+}
+
+// handleLauncherUpdateManifest 按 Tauri updater 静态清单格式输出裸 JSON（不能套业务信封），
+// 当前版本已是最新（或更高）时返回 204 No Content。
+func (h *Handler) handleLauncherUpdateManifest(w http.ResponseWriter, r *http.Request) {
+	if !h.requireGET(w, r) {
+		return
+	}
+	if h.players == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	release, err := h.players.LatestLauncherRelease(r.Context())
+	if err != nil || release.Version == "" {
+		if err != nil {
+			h.logger.Error("query latest launcher release", "error", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	current := strings.TrimSpace(r.URL.Query().Get("current_version"))
+	if compareVersions(normalizeVersion(current), normalizeVersion(release.Version)) >= 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	target := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target")))
+	if target == "" {
+		target = "windows"
+	}
+	arch := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("arch")))
+	if arch == "" {
+		arch = "x86_64"
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(map[string]any{
+		"version":  release.Version,
+		"notes":    release.Changelog,
+		"pub_date": release.PubDate.UTC().Format(time.RFC3339),
+		"platforms": map[string]any{
+			target + "-" + arch: map[string]string{
+				"signature": release.Signature,
+				"url":       release.ArtifactURL,
+			},
+		},
+	}); err != nil {
+		h.logger.Error("write launcher update manifest", "error", err)
+	}
 }
 
 func (h *Handler) handleAccount(w http.ResponseWriter, r *http.Request) {

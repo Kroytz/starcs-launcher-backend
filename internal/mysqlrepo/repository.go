@@ -989,6 +989,27 @@ func workshopPageURL(workshopID string) string {
 	return "https://steamcommunity.com/workshop/filedetails/?id=" + url.QueryEscape(strings.TrimSpace(workshopID))
 }
 
+// LatestLauncherRelease 返回最新一条启动器发布记录；无记录时返回零值（Version == ""）。
+func (r *Repository) LatestLauncherRelease(ctx context.Context) (domain.LauncherRelease, error) {
+	var release domain.LauncherRelease
+	var mandatory int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id, version, mandatory, changelog, artifact_url, signature, pub_date
+		FROM launcher_release
+		ORDER BY pub_date DESC, id DESC
+		LIMIT 1
+	`).Scan(&release.ID, &release.Version, &mandatory, &release.Changelog,
+		&release.ArtifactURL, &release.Signature, &release.PubDate)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.LauncherRelease{}, nil
+	}
+	if err != nil {
+		return domain.LauncherRelease{}, fmt.Errorf("query latest launcher release: %w", err)
+	}
+	release.Mandatory = mandatory != 0
+	return release, nil
+}
+
 func (r *Repository) PlayerReadModel(ctx context.Context, steamID uint64) (domain.PlayerReadModel, error) {
 	account, err := r.Account(ctx, steamID)
 	if err != nil {

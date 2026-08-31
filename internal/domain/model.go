@@ -1,6 +1,9 @@
 package domain
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Announcement struct {
 	ID             string          `json:"id"`
@@ -192,4 +195,15 @@ type Bootstrap struct {
 	StoreItems    []StoreItem     `json:"storeItems"`
 	Inventory     []InventoryItem `json:"inventory"`
 	Maps          []MapResource   `json:"maps"`
+}
+
+// LauncherRelease 表示一条启动器发布记录（自更新用）。
+type LauncherRelease struct {
+	ID          uint64    `json:"id"`
+	Version     string    `json:"version"`
+	Mandatory   bool      `json:"mandatory"`
+	Changelog   string    `json:"changelog"`
+	ArtifactURL string    `json:"artifactUrl"`
+	Signature   string    `json:"-"` // 仅 manifest 端点输出，策略端点不暴露
+	PubDate     time.Time `json:"pubDate"`
 }

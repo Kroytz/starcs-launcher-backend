@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/starcs/star-launcher-backend/internal/api"
 	"github.com/starcs/star-launcher-backend/internal/demo"
@@ -109,6 +110,18 @@ func (fakePlayers) WorkshopPacks(_ context.Context, mode string) ([]domain.Works
 	}, nil
 }
 
+func (fakePlayers) LatestLauncherRelease(_ context.Context) (domain.LauncherRelease, error) {
+	return domain.LauncherRelease{
+		ID:          1,
+		Version:     "0.2.0",
+		Mandatory:   true,
+		Changelog:   "## 更新内容\n- 测试条目",
+		ArtifactURL: "https://static.starcs.cn/launcher/STAR Launcher_0.2.0_x64-setup.exe",
+		Signature:   "untrusted comment: test signature",
+		PubDate:     time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC),
+	}, nil
+}
+
 func (repository fakePlayers) PlayerReadModel(ctx context.Context, steamID uint64) (domain.PlayerReadModel, error) {
 	inventory, err := repository.Inventory(ctx, steamID)
 	return domain.PlayerReadModel{Inventory: inventory}, err
@@ -204,6 +217,121 @@ func TestWorkshopPacksRejectsInvalidMode(t *testing.T) {
 
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d", response.Code)
+	}
+}
+
+func TestLauncherUpdatePolicy(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/launcher/update-policy", nil)
+	response := httptest.NewRecorder()
+	newAuthenticatedHandler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", response.Code)
+	}
+	var body envelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Code != 2000 {
+		t.Fatalf("expected application code 2000, got %d", body.Code)
+	}
+	var data struct {
+		Version   string `json:"version"`
+		Mandatory bool   `json:"mandatory"`
+		Changelog string `json:"changelog"`
+		PubDate   string `json:"pubDate"`
+	}
+	if err := json.Unmarshal(body.Data, &data); err != nil {
+		t.Fatalf("decode policy data: %v", err)
+	}
+	if data.Version != "0.2.0" || !data.Mandatory || data.Changelog == "" {
+		t.Fatalf("unexpected policy payload: %#v", data)
+	}
+	if _, err := time.Parse(time.RFC3339, data.PubDate); err != nil {
+		t.Fatalf("pubDate is not RFC3339: %q", data.PubDate)
+	}
+}
+
+func TestLauncherUpdatePolicyWithoutRelease(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/launcher/update-policy", nil)
+	response := httptest.NewRecorder()
+	newHandler().ServeHTTP(response, request) // players == nil → 无发布
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", response.Code)
+	}
+	var body envelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Code != 4004 {
+		t.Fatalf("expected application code 4004, got %d", body.Code)
+	}
+}
+
+func TestLauncherUpdateManifest(t *testing.T) {
+	cases := []struct {
+		name       string
+		query      string
+		wantStatus int
+	}{
+		{name: "older version gets manifest", query: "target=windows&arch=x86_64&current_version=0.1.0", wantStatus: http.StatusOK},
+		{name: "v-prefixed older version gets manifest", query: "current_version=v0.1.0", wantStatus: http.StatusOK},
+		{name: "missing current version gets manifest", query: "", wantStatus: http.StatusOK},
+		{name: "same version gets 204", query: "current_version=0.2.0", wantStatus: http.StatusNoContent},
+		{name: "newer version gets 204", query: "current_version=0.3.0", wantStatus: http.StatusNoContent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/launcher/manifest?"+tc.query, nil)
+			response := httptest.NewRecorder()
+			newAuthenticatedHandler().ServeHTTP(response, request)
+
+			if response.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d", tc.wantStatus, response.Code)
+			}
+			if tc.wantStatus != http.StatusOK {
+				return
+			}
+
+			// 裸 JSON（无业务信封），符合 Tauri updater 静态清单格式
+			var manifest struct {
+				Version  string `json:"version"`
+				Notes    string `json:"notes"`
+				PubDate  string `json:"pub_date"`
+				Code     int    `json:"code"`
+				Platform map[string]struct {
+					Signature string `json:"signature"`
+					URL       string `json:"url"`
+				} `json:"platforms"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&manifest); err != nil {
+				t.Fatalf("decode manifest: %v", err)
+			}
+			if manifest.Code != 0 {
+				t.Fatal("manifest must not be wrapped in the business envelope")
+			}
+			if manifest.Version != "0.2.0" || manifest.Notes == "" {
+				t.Fatalf("unexpected manifest: %#v", manifest)
+			}
+			platform, ok := manifest.Platform["windows-x86_64"]
+			if !ok || platform.Signature == "" || platform.URL == "" {
+				t.Fatalf("manifest missing windows-x86_64 platform: %#v", manifest.Platform)
+			}
+			if _, err := time.Parse(time.RFC3339, manifest.PubDate); err != nil {
+				t.Fatalf("pub_date is not RFC3339: %q", manifest.PubDate)
+			}
+		})
+	}
+}
+
+func TestLauncherUpdateManifestWithoutRelease(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/launcher/manifest?current_version=0.1.0", nil)
+	response := httptest.NewRecorder()
+	newHandler().ServeHTTP(response, request) // players == nil → 无发布
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected status 204, got %d", response.Code)
 	}
 }
 
