@@ -40,6 +40,8 @@ type StoreItem struct {
 	Title           string `json:"title"`
 	Description     string `json:"description"`
 	Price           int64  `json:"price"`
+	Days            int    `json:"days"`
+	Quantity        int    `json:"quantity"`
 	Icon            string `json:"icon"`
 	Tone            string `json:"tone"`
 	Tag             string `json:"tag"`
@@ -76,6 +78,14 @@ type StardustEquipment struct {
 	Type     string `json:"type"`
 	UniqueID string `json:"uniqueId"`
 	Slot     int    `json:"slot"`
+}
+
+// StarlightPurchaseResult 星光商城购买成功后的最新账号状态。
+type StarlightPurchaseResult struct {
+	Starlight       int64                 `json:"starlight"`
+	Inventory       []InventoryItem       `json:"inventory"`
+	PurchaseHistory []PurchaseHistoryItem `json:"purchaseHistory"`
+	StoreItems      []StoreItem           `json:"storeItems"`
 }
 
 type Profile struct {
@@ -152,6 +162,7 @@ type PlayerReadModel struct {
 	PurchaseHistory []PurchaseHistoryItem `json:"purchaseHistory"`
 	SeasonPass      SeasonPassOverview    `json:"seasonPass"`
 	Penalties       []AccountPenalty      `json:"penalties"`
+	StoreItems      []StoreItem           `json:"storeItems"`
 }
 
 type AppConfig struct {
