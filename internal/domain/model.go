@@ -144,18 +144,22 @@ type PurchaseHistoryItem struct {
 }
 
 type SeasonPassOverview struct {
-	Available             bool   `json:"available"`
-	SeasonID              int    `json:"seasonId"`
-	PassType              int    `json:"passType"`
-	Level                 int    `json:"level"`
-	Experience            int    `json:"experience"`
-	ClaimedRewardCount    int    `json:"claimedRewardCount"`
-	StarSourceChestOpened int    `json:"starSourceChestOpened"`
-	DailyGames            int    `json:"dailyGames"`
-	DailyOnlineMinutes    int    `json:"dailyOnlineMinutes"`
-	WeeklyGames           int    `json:"weeklyGames"`
-	WeeklyCompletedModes  int    `json:"weeklyCompletedModes"`
-	UpdatedAt             string `json:"updatedAt"`
+	Available             bool           `json:"available"`
+	SeasonID              int            `json:"seasonId"`
+	PassType              int            `json:"passType"`
+	Level                 int            `json:"level"`
+	Experience            int            `json:"experience"`
+	ClaimedRewardCount    int            `json:"claimedRewardCount"`
+	StarSourceChestOpened int            `json:"starSourceChestOpened"`
+	DailyGames            int            `json:"dailyGames"`
+	DailyOnlineMinutes    int            `json:"dailyOnlineMinutes"`
+	DailyLoggedIn         bool           `json:"dailyLoggedIn"`
+	WeeklyGames           int            `json:"weeklyGames"`
+	WeeklyCompletedModes  int            `json:"weeklyCompletedModes"`
+	WeeklyLoggedIn        bool           `json:"weeklyLoggedIn"`
+	DailyQuestStatus      map[string]int `json:"dailyQuestStatus"`
+	WeeklyQuestStatus     map[string]int `json:"weeklyQuestStatus"`
+	UpdatedAt             string         `json:"updatedAt"`
 }
 
 type AccountPenalty struct {

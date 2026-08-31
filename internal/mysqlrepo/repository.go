@@ -1128,11 +1128,38 @@ func (r *Repository) SeasonPass(ctx context.Context, steamID uint64) (domain.Sea
 	item.Available = true
 	item.ClaimedRewardCount = collectionCount(claimedRewards)
 	item.UpdatedAt = updated.Format(time.RFC3339)
-	_ = r.db.QueryRowContext(ctx, `SELECT games_completed, online_minutes FROM season_pass_daily_quests WHERE steam_id64 = ? ORDER BY quest_date DESC LIMIT 1`, steamID).Scan(&item.DailyGames, &item.DailyOnlineMinutes)
+	item.DailyQuestStatus = map[string]int{}
+	item.WeeklyQuestStatus = map[string]int{}
+	var dailyQuestStatus string
+	var dailyLoggedIn int
+	if err := r.db.QueryRowContext(ctx, `SELECT games_completed, online_minutes, has_logged_in, quest_status FROM season_pass_daily_quests WHERE steam_id64 = ? ORDER BY quest_date DESC LIMIT 1`, steamID).
+		Scan(&item.DailyGames, &item.DailyOnlineMinutes, &dailyLoggedIn, &dailyQuestStatus); err == nil {
+		item.DailyLoggedIn = dailyLoggedIn != 0
+		item.DailyQuestStatus = parseQuestStatus(dailyQuestStatus)
+	}
 	var completedModes string
-	_ = r.db.QueryRowContext(ctx, `SELECT games_completed, completed_modes FROM season_pass_weekly_quests WHERE steam_id64 = ? ORDER BY week_start_date DESC LIMIT 1`, steamID).Scan(&item.WeeklyGames, &completedModes)
+	var weeklyQuestStatus string
+	var weeklyLoggedIn int
+	if err := r.db.QueryRowContext(ctx, `SELECT games_completed, completed_modes, has_logged_in, quest_status FROM season_pass_weekly_quests WHERE steam_id64 = ? ORDER BY week_start_date DESC LIMIT 1`, steamID).
+		Scan(&item.WeeklyGames, &completedModes, &weeklyLoggedIn, &weeklyQuestStatus); err == nil {
+		item.WeeklyLoggedIn = weeklyLoggedIn != 0
+		item.WeeklyQuestStatus = parseQuestStatus(weeklyQuestStatus)
+	}
 	item.WeeklyCompletedModes = collectionCount(completedModes)
 	return item, nil
+}
+
+// parseQuestStatus 解析任务完成状态 JSON（形如 {"1":2,"5":2}，key 为任务 ID，值 >= 2 表示已完成）。
+func parseQuestStatus(raw string) map[string]int {
+	status := make(map[string]int)
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return status
+	}
+	if err := json.Unmarshal([]byte(trimmed), &status); err != nil {
+		return make(map[string]int)
+	}
+	return status
 }
 
 func (r *Repository) Penalties(ctx context.Context, steamID uint64) ([]domain.AccountPenalty, error) {
