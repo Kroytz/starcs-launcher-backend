@@ -1,9 +1,12 @@
 package mysqlrepo
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 	"time"
+
+	"github.com/starcs/star-launcher-backend/internal/domain"
 )
 
 func TestAnnouncementSummaryUsesFirstTextBlock(t *testing.T) {
@@ -66,6 +69,49 @@ func TestInventoryQuantityTreatsPermanentRowsAsOwned(t *testing.T) {
 	}
 	if got := inventoryQuantity(4); got != 4 {
 		t.Fatalf("stacked inventory quantity should be preserved, got %d", got)
+	}
+}
+
+type fakeGroupMembership struct {
+	allowed map[uint64]bool
+}
+
+func (f fakeGroupMembership) IsMember(_ context.Context, groupID, _ uint64, _ int) bool {
+	return f.allowed[groupID]
+}
+
+func TestFilterExclusiveInventoryMatchesPersonalAndSteamGroupEntitlements(t *testing.T) {
+	const steamID = uint64(76561198000000001)
+	repository := &Repository{groupMembership: fakeGroupMembership{allowed: map[uint64]bool{42: true}}}
+	items := []domain.InventoryItem{
+		{ProductID: 1, UseLimit: 2},
+		{ProductID: 2, UseLimit: 8, UseLimitInfo: "76561198000000001"},
+		{ProductID: 3, UseLimit: 8, UseLimitInfo: "76561198000000002"},
+		{ProductID: 4, UseLimit: 4, UseLimitInfo: "42, 10"},
+		{ProductID: 5, UseLimit: 4, UseLimitInfo: "43, 10"},
+		{ProductID: 6, UseLimit: 4, UseLimitInfo: "invalid"},
+	}
+
+	filtered := repository.filterExclusiveInventory(context.Background(), steamID, items)
+	if len(filtered) != 3 {
+		t.Fatalf("expected three eligible items, got %+v", filtered)
+	}
+	for index, productID := range []int64{1, 2, 4} {
+		if filtered[index].ProductID != productID {
+			t.Fatalf("filtered[%d].ProductID=%d, want %d", index, filtered[index].ProductID, productID)
+		}
+	}
+}
+
+func TestParseSteamGroupLimitUsesStarLightStoreFormat(t *testing.T) {
+	groupID, maxMembers, ok := parseSteamGroupLimit(" 103582791429521412, 25 ")
+	if !ok || groupID != 103582791429521412 || maxMembers != 25 {
+		t.Fatalf("unexpected parsed group limit: group=%d max=%d ok=%v", groupID, maxMembers, ok)
+	}
+	for _, invalid := range []string{"", "42", "42,0", "bad,10", "42,10,extra"} {
+		if _, _, ok := parseSteamGroupLimit(invalid); ok {
+			t.Fatalf("expected %q to be rejected", invalid)
+		}
 	}
 }
 

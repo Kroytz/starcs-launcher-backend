@@ -31,6 +31,13 @@ type Repository struct {
 	db                        *sql.DB
 	challengeDB               *sql.DB
 	challengeCatalogAvailable bool
+	groupMembership           GroupMembershipChecker
+}
+
+// GroupMembershipChecker resolves the Steam Community group entitlement used
+// by StarLightStore products with use_limit=4.
+type GroupMembershipChecker interface {
+	IsMember(ctx context.Context, groupID, steamID uint64, maxMembers int) bool
 }
 
 func Open(ctx context.Context, dsn string) (*Repository, error) {
@@ -84,6 +91,10 @@ func (r *Repository) ConnectChallenge(ctx context.Context, dsn string) error {
 
 func (r *Repository) ChallengeCatalogAvailable() bool {
 	return r.challengeCatalogAvailable
+}
+
+func (r *Repository) SetGroupMembershipChecker(checker GroupMembershipChecker) {
+	r.groupMembership = checker
 }
 
 func (r *Repository) Close() error {
@@ -245,6 +256,17 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate inventory: %w", err)
 	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close inventory rows: %w", err)
+	}
+
+	exclusiveItems, err := r.exclusiveInventory(ctx, steamID, items)
+	if err != nil {
+		return nil, err
+	}
+	items = append(items, exclusiveItems...)
+	items = r.filterExclusiveInventory(ctx, steamID, items)
+
 	if r.challengeDB != nil && r.challengeCatalogAvailable {
 		challengeItems, err := r.challengeInventory(ctx, steamID)
 		if err != nil {
@@ -253,6 +275,167 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 		items = append(items, challengeItems...)
 	}
 	return items, nil
+}
+
+// exclusiveInventory mirrors StarLightStore's temporary inventory behavior for
+// personal (use_limit=8) and Steam group (use_limit=4) products. These type=3
+// products do not normally have rows in sls_player_inventory.
+func (r *Repository) exclusiveInventory(ctx context.Context, steamID uint64, existing []domain.InventoryItem) ([]domain.InventoryItem, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			p.id,
+			p.name,
+			p.label,
+			p.type,
+			p.rarity_id,
+			COALESCE(r.name, ''),
+			p.created,
+			COALESCE(p.desc, ''),
+			COALESCE(p.mode, 'ALL'),
+			p.use_limit,
+			COALESCE(p.use_limit_info, ''),
+			COALESCE(wm.prefab, ''),
+			COALESCE(wm.weapon_type, 0)
+		FROM sls_product AS p
+		LEFT JOIN sls_product_rarity AS r ON r.id = p.rarity_id
+		LEFT JOIN sls_product_detail_weapon_model AS wm ON wm.product_id = p.id
+		WHERE p.type = 3
+			AND p.use_limit IN (4, 8)
+			AND p.show_state IN (1, 3)
+			AND LOWER(COALESCE(p.label, '')) NOT LIKE '%character%'
+			AND (p.use_limit = 4 OR TRIM(p.use_limit_info) = ?)
+		ORDER BY p.rarity_id DESC, p.updated DESC, p.id ASC
+	`, strconv.FormatUint(steamID, 10))
+	if err != nil {
+		return nil, fmt.Errorf("query exclusive inventory: %w", err)
+	}
+	defer rows.Close()
+
+	existingIDs := make(map[int64]struct{}, len(existing))
+	for _, item := range existing {
+		existingIDs[item.ProductID] = struct{}{}
+	}
+	items := make([]domain.InventoryItem, 0)
+	for rows.Next() {
+		var (
+			productID    int64
+			name         string
+			label        string
+			productType  int
+			rarityID     int
+			rarityName   string
+			created      time.Time
+			description  string
+			mode         string
+			useLimit     int
+			useLimitInfo string
+			weaponPrefab string
+			weaponTypeID int
+		)
+		if err := rows.Scan(&productID, &name, &label, &productType, &rarityID, &rarityName, &created, &description, &mode, &useLimit, &useLimitInfo, &weaponPrefab, &weaponTypeID); err != nil {
+			return nil, fmt.Errorf("scan exclusive inventory: %w", err)
+		}
+		if _, exists := existingIDs[productID]; exists {
+			continue
+		}
+		existingIDs[productID] = struct{}{}
+		itemType, icon := displayType(label, productType)
+		items = append(items, domain.InventoryItem{
+			ProductID:    productID,
+			ID:           fmt.Sprintf("product-%d", productID),
+			Source:       "starlight",
+			UniqueID:     strconv.FormatInt(productID, 10),
+			Name:         name,
+			Type:         itemType,
+			Rarity:       displayRarity(rarityID, rarityName),
+			Quantity:     1,
+			Icon:         icon,
+			Tone:         rarityTone(rarityID),
+			AcquiredAt:   created.Format(time.RFC3339),
+			Description:  description,
+			Mode:         mode,
+			UseLimit:     useLimit,
+			UseLimitInfo: useLimitInfo,
+			WeaponPrefab: weaponPrefab,
+			WeaponType:   weaponModelTypeName(weaponTypeID),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate exclusive inventory: %w", err)
+	}
+	return items, nil
+}
+
+func (r *Repository) filterExclusiveInventory(ctx context.Context, steamID uint64, items []domain.InventoryItem) []domain.InventoryItem {
+	allowed := make([]bool, len(items))
+	type groupCheck struct {
+		index      int
+		groupID    uint64
+		maxMembers int
+	}
+	checks := make([]groupCheck, 0)
+	for index, item := range items {
+		switch item.UseLimit {
+		case 4:
+			groupID, maxMembers, ok := parseSteamGroupLimit(item.UseLimitInfo)
+			if ok && r.groupMembership != nil {
+				checks = append(checks, groupCheck{index: index, groupID: groupID, maxMembers: maxMembers})
+			}
+		case 8:
+			allowed[index] = personalExclusiveAllowed(steamID, item.UseLimitInfo)
+		default:
+			allowed[index] = true
+		}
+	}
+
+	type groupResult struct {
+		index   int
+		allowed bool
+	}
+	results := make(chan groupResult, len(checks))
+	semaphore := make(chan struct{}, 8)
+	for _, check := range checks {
+		check := check
+		go func() {
+			semaphore <- struct{}{}
+			isMember := r.groupMembership.IsMember(ctx, check.groupID, steamID, check.maxMembers)
+			<-semaphore
+			results <- groupResult{index: check.index, allowed: isMember}
+		}()
+	}
+	for range checks {
+		result := <-results
+		allowed[result.index] = result.allowed
+	}
+
+	filtered := make([]domain.InventoryItem, 0, len(items))
+	for index, item := range items {
+		if allowed[index] {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func personalExclusiveAllowed(steamID uint64, raw string) bool {
+	boundSteamID, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
+	return err == nil && boundSteamID != 0 && boundSteamID == steamID
+}
+
+func parseSteamGroupLimit(raw string) (uint64, int, bool) {
+	parts := strings.Split(raw, ",")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	groupID, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 64)
+	if err != nil || groupID == 0 {
+		return 0, 0, false
+	}
+	maxMembers, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || maxMembers <= 0 {
+		return 0, 0, false
+	}
+	return groupID, maxMembers, true
 }
 
 func weaponModelTypeName(value int) string {
@@ -715,6 +898,7 @@ func (r *Repository) StoreItems(ctx context.Context) ([]domain.StoreItem, error)
 		LEFT JOIN scs_file AS f ON f.id = pv.file_id
 		WHERE pp.state = 1 AND pp.currency_id = 1
 		  AND p.show_state IN (1, 2)
+		  AND p.type != 3
 		  AND LOWER(COALESCE(p.label, '')) NOT LIKE '%starforge%'
 		ORDER BY pp.sort ASC, p.rarity_id DESC, p.id ASC
 	`)

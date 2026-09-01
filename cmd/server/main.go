@@ -16,6 +16,7 @@ import (
 	"github.com/starcs/star-launcher-backend/internal/config"
 	"github.com/starcs/star-launcher-backend/internal/demo"
 	"github.com/starcs/star-launcher-backend/internal/mysqlrepo"
+	"github.com/starcs/star-launcher-backend/internal/steamgroup"
 )
 
 const defaultOrigins = "http://localhost:1420,http://tauri.localhost,https://tauri.localhost,tauri://localhost"
@@ -81,6 +82,7 @@ func main() {
 			logger.Error("connect inventory database", "error", err)
 			os.Exit(1)
 		}
+		repository.SetGroupMembershipChecker(steamgroup.New(logger, 15*time.Minute))
 		if challengeConfigured {
 			if err := repository.ConnectChallenge(context.Background(), challengeDSN); err != nil {
 				logger.Error("connect challenge database", "error", err)

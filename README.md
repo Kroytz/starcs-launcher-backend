@@ -1,6 +1,6 @@
 # STAR Launcher Backend
 
-给 STAR Launcher 使用的轻量 Go HTTP API。公告与商城仍使用展示数据；账号登录会校验真实数据库，登录成功后从 `sls_player_inventory` 读取该 Steam64 的真实库存。
+给 STAR Launcher 使用的轻量 Go HTTP API。启动器主要通过 `/api/v1/bootstrap` 与登录后会话接口取数；账号登录会校验真实数据库，登录成功后从 `sls_player_inventory` 读取该 Steam64 的真实库存。
 
 ## 要求
 
@@ -69,10 +69,8 @@ go run -buildvcs=false ./cmd/import_stardust_catalog -file E:\Downloads\StarDust
 | --- | --- | --- |
 | GET | `/healthz` | 健康检查 |
 | GET | `/api/v1/bootstrap` | 一次获取登录器展示所需的全部基础数据 |
-| GET | `/api/v1/announcements` | 公告列表 |
 | GET | `/api/v1/store/items` | 商城商品，可用 `currency=starlight` 或 `currency=stardust` 筛选 |
 | GET | `/api/v1/workshop-packs?mode=ZM` | 获取公共基础资源包与指定模式资源包 |
-| GET | `/api/v1/me` | 演示用户资料、钱包及兑换比例 |
 | POST | `/api/v1/auth/login` | 使用 Steam64 与游戏内密码登录，并返回真实库存 |
 | POST | `/api/v1/auth/verify` | 敏感操作前使用 Bearer 会话与当前密码复验 |
 | GET | `/api/v1/me/inventory` | 使用 Bearer 会话读取真实库存，并通过 `X-StarCS-Reauth` 携带当前密码 |
@@ -107,7 +105,5 @@ Invoke-RestMethod -Headers @{ Authorization = "Bearer $($login.data.token)"; 'X-
 - 装备配置不直接写库存数据库；后端通过 Star-Core 已有的 ClientPrefs API 更新 `star_light_store` 插件的 `p_s` 与 `w_s`，并保留同插件的其他偏好键。
 - `STAR_SKIP_PASSWORD_AUTH=true` 时仅校验 Steam64 格式并签发 24 小时只读会话；默认关闭，不能直接用于公开生产环境。
 - 登录会话保存在后端内存中，有效期 24 小时；服务重启后需要重新登录。
-- `/api/v1/me`、公告、钱包和商城商品目前仍是展示数据。
-- 充值、兑换和购买暂时没有写接口，避免演示阶段产生伪交易语义。
-- 暂不修改真实库存数量，也不写入装备配置；数据库结构中没有明确的装备配置表与物品使用副作用定义。
+- 未配置数据库时，`/api/v1/bootstrap` 与 `/api/v1/store/items` 会回退到本地展示数据；已配置时公告、地图与商城走真实库，游客账号展示仍可能是占位资料。
 - 商品的 `icon` 与 `tone` 返回前端可识别的资源键和 Tailwind 色调键。

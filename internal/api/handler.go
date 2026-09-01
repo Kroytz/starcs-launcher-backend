@@ -163,7 +163,6 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/", h.handleIndex)
 	mux.HandleFunc("/healthz", h.handleHealth)
 	mux.HandleFunc("/api/v1/bootstrap", h.handleBootstrap)
-	mux.HandleFunc("/api/v1/announcements", h.handleAnnouncements)
 	mux.HandleFunc("/api/v1/store/items", h.handleStoreItems)
 	mux.HandleFunc("/api/v1/maps", h.handleMaps)
 	mux.HandleFunc("/api/v1/workshop-packs", h.handleWorkshopPacks)
@@ -171,7 +170,6 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/api/v1/launcher/manifest", h.handleLauncherUpdateManifest)
 	mux.HandleFunc("/api/v1/auth/login", h.handleLogin)
 	mux.HandleFunc("/api/v1/auth/verify", h.handleVerifyPassword)
-	mux.HandleFunc("/api/v1/me", h.handleAccount)
 	mux.HandleFunc("/api/v1/me/inventory", h.handleInventory)
 	mux.HandleFunc("/api/v1/me/equipment", h.handleEquipment)
 	mux.HandleFunc("/api/v1/me/equipment/equip", h.handleEquip)
@@ -238,13 +236,6 @@ func (h *Handler) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		bootstrap.Maps = maps
 	}
 	h.writeSuccess(w, bootstrap)
-}
-
-func (h *Handler) handleAnnouncements(w http.ResponseWriter, r *http.Request) {
-	if !h.requireGET(w, r) {
-		return
-	}
-	h.writeSuccess(w, h.store.Announcements())
 }
 
 func (h *Handler) handleStoreItems(w http.ResponseWriter, r *http.Request) {
@@ -402,13 +393,6 @@ func (h *Handler) handleLauncherUpdateManifest(w http.ResponseWriter, r *http.Re
 	}); err != nil {
 		h.logger.Error("write launcher update manifest", "error", err)
 	}
-}
-
-func (h *Handler) handleAccount(w http.ResponseWriter, r *http.Request) {
-	if !h.requireGET(w, r) {
-		return
-	}
-	h.writeSuccess(w, h.store.Account())
 }
 
 func (h *Handler) handleInventory(w http.ResponseWriter, r *http.Request) {
