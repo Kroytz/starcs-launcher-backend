@@ -17,8 +17,11 @@ const (
 )
 
 var allowedGameCommands = map[string]struct{}{
-	"server.ping": {},
-	"server.info": {},
+	"server.ping":             {},
+	"server.info":             {},
+	"player.reload_inventory": {},
+	"player.reload_prefs":     {},
+	"player.reload_stardust":  {},
 }
 
 type gameServerCommandRequest struct {

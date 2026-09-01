@@ -81,7 +81,7 @@ go run -buildvcs=false ./cmd/import_stardust_catalog -file E:\Downloads\StarDust
 | POST | `/internal/v1/game-password` | 游戏服设置/修改 `star_user` 游戏密码；需要 `X-Star-Api-Key` |
 | GET | `/internal/v1/ws/game` | 游戏服 WSS 控制面（Query: `serverId` 必填，`mode`/`hostname` 可选）；需要 `X-Star-Api-Key` |
 | GET | `/internal/v1/servers` | 列出当前已连接的游戏服控制会话 |
-| POST | `/internal/v1/servers/{serverId}/commands` | 向已连接游戏服下发白名单指令并等待回执；当前允许 `server.ping`、`server.info` |
+| POST | `/internal/v1/servers/{serverId}/commands` | 向已连接游戏服下发白名单指令并等待回执；允许 `server.ping`、`server.info`、`player.reload_inventory`、`player.reload_prefs`、`player.reload_stardust` |
 
 示例：
 
@@ -106,6 +106,9 @@ Invoke-RestMethod -Headers $headers http://localhost:8080/internal/v1/servers
 Invoke-RestMethod -Method Post -Headers $headers -ContentType 'application/json' `
   -Body '{"name":"server.ping","payload":{},"timeoutMs":5000}' `
   http://localhost:8080/internal/v1/servers/zm-01/commands
+Invoke-RestMethod -Method Post -Headers $headers -ContentType 'application/json' `
+  -Body '{"name":"player.reload_inventory","payload":{"steamId":"7656119xxxxxxxxxx"},"timeoutMs":8000}' `
+  http://localhost:8080/internal/v1/servers/zm-01/commands
 ```
 
 ## 当前边界
@@ -120,5 +123,5 @@ Invoke-RestMethod -Method Post -Headers $headers -ContentType 'application/json'
 - `STAR_SKIP_PASSWORD_AUTH=true` 时仅校验 Steam64 格式并签发 24 小时只读会话；默认关闭，不能直接用于公开生产环境。
 - 登录会话保存在后端内存中，有效期 24 小时；服务重启后需要重新登录。
 - 未配置数据库时，`/api/v1/bootstrap` 与 `/api/v1/store/items` 会回退到本地展示数据；已配置时公告、地图与商城走真实库，游客账号展示仍可能是占位资料。
-- 游戏服可通过 WSS 出站连接 `/internal/v1/ws/game`，由后端经 `POST /internal/v1/servers/{serverId}/commands` 下发指令；同一 `serverId` 新连接会顶替旧连接。第一期指令白名单仅含 `server.ping` 与 `server.info`。
+- 游戏服可通过 WSS 出站连接 `/internal/v1/ws/game`，由后端经 `POST /internal/v1/servers/{serverId}/commands` 下发指令；同一 `serverId` 新连接会顶替旧连接。`player.reload_prefs` 由 StarCore 直接重载 ClientPrefs；`player.reload_inventory` / `player.reload_stardust` 仅在玩家在线时由 Core 派发控制台指令（`sls_reload_player_inventory` / `css_stardust_reload_player`）并立即回执，不等待商店插件结果。
 - 商品的 `icon` 与 `tone` 返回前端可识别的资源键和 Tailwind 色调键。
