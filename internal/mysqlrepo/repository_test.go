@@ -1,6 +1,10 @@
 package mysqlrepo
 
-import "testing"
+import (
+	"database/sql"
+	"testing"
+	"time"
+)
 
 func TestAnnouncementSummaryUsesFirstTextBlock(t *testing.T) {
 	raw := `{"sections":[{"title":"更新说明","blocks":[{"kind":"paragraph","text":"第一段公告内容"}]}]}`
@@ -62,6 +66,20 @@ func TestInventoryQuantityTreatsPermanentRowsAsOwned(t *testing.T) {
 	}
 	if got := inventoryQuantity(4); got != 4 {
 		t.Fatalf("stacked inventory quantity should be preserved, got %d", got)
+	}
+}
+
+func TestFormatExpiryTreatsNullAndSentinelAsPermanent(t *testing.T) {
+	if got := formatExpiry(sql.NullTime{}); got != "" {
+		t.Fatalf("NULL expiry should display as permanent, got %q", got)
+	}
+	sentinel := time.Date(9000, 1, 1, 0, 0, 0, 0, time.Local)
+	if got := formatExpiry(sql.NullTime{Time: sentinel, Valid: true}); got != "" {
+		t.Fatalf("9000 sentinel should display as permanent, got %q", got)
+	}
+	timed := time.Date(2030, 6, 1, 12, 0, 0, 0, time.UTC)
+	if got := formatExpiry(sql.NullTime{Time: timed, Valid: true}); got != timed.Format(time.RFC3339) {
+		t.Fatalf("timed expiry should keep RFC3339, got %q", got)
 	}
 }
 

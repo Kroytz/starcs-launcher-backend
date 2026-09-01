@@ -151,6 +151,8 @@ func (r *Repository) UpdateGamePasswordHash(ctx context.Context, steamID uint64,
 	return nil
 }
 
+// Inventory 返回玩家当前有效库存。非数量型永久物品兼容 expired IS NULL（旧数据）与 '9000-01-01' 哨兵，
+// 与 StoreItemsForPlayer / PurchaseStarlight 的「已拥有永久版」判定保持同一口径。
 func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.InventoryItem, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT
@@ -174,8 +176,19 @@ func (r *Repository) Inventory(ctx context.Context, steamID uint64) ([]domain.In
 		LEFT JOIN sls_product_rarity AS r ON r.id = p.rarity_id
 		LEFT JOIN sls_product_detail_weapon_model AS wm ON wm.product_id = p.id
 		WHERE i.steamid = ?
-			AND (i.expired IS NULL OR i.expired > NOW())
-			AND (i.number > 0 OR i.expired > NOW())
+			AND (
+				-- 数量型：仅展示仍有库存的行
+				(p.type = 2 AND i.number > 0)
+				OR (
+					-- 非数量型：兼容旧永久行 expired IS NULL、插件哨兵 9000-01-01，以及未过期期限档
+					p.type != 2
+					AND (
+						i.expired IS NULL
+						OR i.expired >= '9000-01-01 00:00:00'
+						OR i.expired > NOW()
+					)
+				)
+			)
 			AND p.show_state IN (1, 3)
 			AND LOWER(COALESCE(p.label, '')) NOT LIKE '%character%'
 		ORDER BY p.rarity_id DESC, i.updated DESC, i.product_id ASC
@@ -1319,9 +1332,10 @@ func inventoryQuantity(quantity int64) int64 {
 	return 1
 }
 
-// formatExpiry converts a nullable expiry column to RFC3339; NULL means permanent.
+// formatExpiry converts a nullable expiry column to RFC3339.
+// NULL and the StarLightStore permanent sentinel (>= 9000-01-01) both mean permanent (empty string).
 func formatExpiry(expired sql.NullTime) string {
-	if !expired.Valid {
+	if !expired.Valid || expired.Time.Year() >= 9000 {
 		return ""
 	}
 	return expired.Time.Format(time.RFC3339)
