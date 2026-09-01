@@ -116,6 +116,42 @@ func TestHubSendCommandTimeout(t *testing.T) {
 	}
 }
 
+func TestHubListServersByMode(t *testing.T) {
+	hub := NewHub(nil, "secret-key")
+	server := httptest.NewServer(hub)
+	t.Cleanup(server.Close)
+
+	dial := func(serverID, mode string) *websocket.Conn {
+		t.Helper()
+		wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/?serverId=" + serverID + "&mode=" + mode
+		header := http.Header{}
+		header.Set(apiKeyHeader, "secret-key")
+		client, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+		if err != nil {
+			t.Fatalf("dial %s: %v", serverID, err)
+		}
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		t.Cleanup(func() { _ = client.Close() })
+		_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+		var accepted Envelope
+		_ = client.ReadJSON(&accepted)
+		return client
+	}
+
+	_ = dial("afk-01", "AFK")
+	_ = dial("zm-01", "ZM")
+
+	afk := hub.ListServersByMode("afk")
+	if len(afk) != 1 || afk[0].ServerID != "afk-01" {
+		t.Fatalf("expected afk-01, got %+v", afk)
+	}
+	if len(hub.ListServersByMode("JB")) != 0 {
+		t.Fatalf("expected no JB servers")
+	}
+}
+
 func TestHubRejectsBadAPIKey(t *testing.T) {
 	hub := NewHub(nil, "secret-key")
 	server := httptest.NewServer(hub)

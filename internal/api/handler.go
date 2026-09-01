@@ -524,6 +524,7 @@ func (h *Handler) handleEquipmentMutation(w http.ResponseWriter, r *http.Request
 		h.writeError(w, http.StatusBadGateway, 5002, "同步游戏内装备配置失败，原配置已尽力恢复")
 		return
 	}
+	h.notifyGameServers(steamID, "player.reload_prefs", mutation.Modes)
 	h.writeSuccess(w, profile)
 }
 
@@ -741,7 +742,96 @@ func (h *Handler) handleStardustEquipment(w http.ResponseWriter, r *http.Request
 		h.writeError(w, http.StatusBadGateway, 5002, "读取星尘装备配置失败")
 		return
 	}
+	h.notifyGameServers(steamID, "player.reload_stardust", nil)
 	h.writeSuccess(w, equipments)
+}
+
+// notifyGameServers best-effort asks connected game servers to reload player state.
+// modes filters by reported WS mode; empty/nil modes targets every connected server.
+// Failures are logged only — ClientPrefs / DB writes already succeeded.
+func (h *Handler) notifyGameServers(steamID uint64, command string, modes []string) {
+	if h.gameWS == nil || !h.gameWS.Enabled() {
+		h.logger.Info("skip game command notify", "command", command, "steamId", steamID, "reason", "hub_disabled")
+		return
+	}
+
+	targets := make([]gamews.ServerInfo, 0)
+	seen := make(map[string]struct{})
+	add := func(servers []gamews.ServerInfo) {
+		for _, server := range servers {
+			if _, ok := seen[server.ServerID]; ok {
+				continue
+			}
+			seen[server.ServerID] = struct{}{}
+			targets = append(targets, server)
+		}
+	}
+	if len(modes) == 0 {
+		add(h.gameWS.ListServers())
+	} else {
+		for _, mode := range modes {
+			matched := h.gameWS.ListServersByMode(mode)
+			if len(matched) == 0 {
+				h.logger.Info("no connected game server for mode",
+					"command", command,
+					"steamId", steamID,
+					"mode", mode,
+				)
+			}
+			add(matched)
+		}
+	}
+	if len(targets) == 0 {
+		h.logger.Info("skip game command notify",
+			"command", command,
+			"steamId", steamID,
+			"modes", modes,
+			"reason", "no_matching_connected_servers",
+		)
+		return
+	}
+
+	payload := map[string]string{"steamId": strconv.FormatUint(steamID, 10)}
+	for _, server := range targets {
+		server := server
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			h.logger.Info("game command notify dispatching",
+				"command", command,
+				"steamId", steamID,
+				"serverId", server.ServerID,
+				"mode", server.Mode,
+			)
+			result, err := h.gameWS.SendCommand(ctx, server.ServerID, command, payload)
+			if err != nil {
+				h.logger.Warn("game command notify failed",
+					"command", command,
+					"steamId", steamID,
+					"serverId", server.ServerID,
+					"mode", server.Mode,
+					"error", err,
+				)
+				return
+			}
+			if !result.OK {
+				h.logger.Warn("game command notify rejected",
+					"command", command,
+					"steamId", steamID,
+					"serverId", server.ServerID,
+					"mode", server.Mode,
+					"error", result.Error,
+				)
+				return
+			}
+			h.logger.Info("game command notify succeeded",
+				"command", command,
+				"steamId", steamID,
+				"serverId", server.ServerID,
+				"mode", server.Mode,
+			)
+		}()
+	}
 }
 
 func validateEquipmentModes(values []string) ([]string, error) {

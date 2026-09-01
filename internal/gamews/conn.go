@@ -91,10 +91,21 @@ func (c *Conn) sendCommand(ctx context.Context, name string, payload any) (Comma
 	c.pending[id] = waiter
 	c.pendingMu.Unlock()
 
+	c.hub.logger.Info("game websocket command queued",
+		"serverId", c.serverID,
+		"commandId", id,
+		"name", name,
+	)
 	if err := c.enqueue(envelope); err != nil {
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
+		c.hub.logger.Warn("game websocket command enqueue failed",
+			"serverId", c.serverID,
+			"commandId", id,
+			"name", name,
+			"error", err,
+		)
 		return CommandResult{}, err
 	}
 
@@ -104,12 +115,38 @@ func (c *Conn) sendCommand(ctx context.Context, name string, payload any) (Comma
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			c.hub.logger.Warn("game websocket command timed out",
+				"serverId", c.serverID,
+				"commandId", id,
+				"name", name,
+			)
 			return CommandResult{}, ErrTimeout
 		}
 		return CommandResult{}, ctx.Err()
 	case <-c.closed:
+		c.hub.logger.Warn("game websocket command aborted: connection closed",
+			"serverId", c.serverID,
+			"commandId", id,
+			"name", name,
+		)
 		return CommandResult{}, ErrClosed
 	case result := <-waiter:
+		if result.OK {
+			c.hub.logger.Info("game websocket command result",
+				"serverId", c.serverID,
+				"commandId", id,
+				"name", name,
+				"ok", true,
+			)
+		} else {
+			c.hub.logger.Warn("game websocket command result",
+				"serverId", c.serverID,
+				"commandId", id,
+				"name", name,
+				"ok", false,
+				"error", result.Error,
+			)
+		}
 		return result, nil
 	}
 }
@@ -207,8 +244,21 @@ func (c *Conn) writePump() {
 			}
 			_ = c.ws.SetWriteDeadline(time.Now().Add(defaultWriteWait))
 			if err := c.ws.WriteJSON(envelope); err != nil {
-				c.hub.logger.Info("game websocket write failed", "serverId", c.serverID, "error", err)
+				c.hub.logger.Warn("game websocket write failed",
+					"serverId", c.serverID,
+					"type", envelope.Type,
+					"name", envelope.Name,
+					"commandId", envelope.ID,
+					"error", err,
+				)
 				return
+			}
+			if envelope.Type == TypeCommand {
+				c.hub.logger.Info("game websocket command sent",
+					"serverId", c.serverID,
+					"commandId", envelope.ID,
+					"name", envelope.Name,
+				)
 			}
 		}
 	}

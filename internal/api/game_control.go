@@ -89,27 +89,42 @@ func (h *Handler) handleGameServerCommand(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 
+	h.logger.Info("game server command dispatching",
+		"serverId", serverID,
+		"name", request.Name,
+		"timeoutMs", timeoutMs,
+	)
 	result, err := h.gameWS.SendCommand(ctx, serverID, request.Name, request.Payload)
 	if err != nil {
 		switch {
 		case errors.Is(err, gamews.ErrNotConnected):
+			h.logger.Warn("game server command failed", "serverId", serverID, "name", request.Name, "reason", "not_connected")
 			h.writeError(w, http.StatusNotFound, 4004, "目标游戏服未连接")
 		case errors.Is(err, gamews.ErrTimeout):
+			h.logger.Warn("game server command failed", "serverId", serverID, "name", request.Name, "reason", "timeout", "timeoutMs", timeoutMs)
 			h.writeError(w, http.StatusGatewayTimeout, 5005, "等待游戏服回执超时")
 		case errors.Is(err, gamews.ErrClosed):
+			h.logger.Warn("game server command failed", "serverId", serverID, "name", request.Name, "reason", "connection_closed")
 			h.writeError(w, http.StatusBadGateway, 5002, "游戏服连接已断开")
 		default:
-			h.logger.Error("dispatch game server command", "serverId", serverID, "name", request.Name, "error", err)
+			h.logger.Error("game server command failed", "serverId", serverID, "name", request.Name, "error", err)
 			h.writeError(w, http.StatusBadGateway, 5002, "下发游戏服指令失败")
 		}
 		return
 	}
 
-	h.logger.Info("game server command completed",
-		"serverId", serverID,
-		"name", request.Name,
-		"ok", result.OK,
-	)
+	if result.OK {
+		h.logger.Info("game server command succeeded",
+			"serverId", serverID,
+			"name", request.Name,
+		)
+	} else {
+		h.logger.Warn("game server command rejected by game server",
+			"serverId", serverID,
+			"name", request.Name,
+			"error", result.Error,
+		)
+	}
 	h.writeSuccess(w, map[string]any{
 		"ok":      result.OK,
 		"payload": result.Payload,

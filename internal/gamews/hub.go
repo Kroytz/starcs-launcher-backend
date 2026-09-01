@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,6 +89,27 @@ func (h *Hub) ListServers() []ServerInfo {
 	return out
 }
 
+// ListServersByMode returns currently connected servers whose reported mode matches
+// (case-insensitive). Servers that connected without a mode are never matched.
+func (h *Hub) ListServersByMode(mode string) []ServerInfo {
+	if h == nil {
+		return nil
+	}
+	mode = strings.ToUpper(strings.TrimSpace(mode))
+	if mode == "" {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]ServerInfo, 0)
+	for _, conn := range h.servers {
+		if strings.EqualFold(strings.TrimSpace(conn.mode), mode) {
+			out = append(out, conn.info())
+		}
+	}
+	return out
+}
+
 func (h *Hub) SendCommand(ctx context.Context, serverID, name string, payload any) (CommandResult, error) {
 	if !h.Enabled() {
 		return CommandResult{}, ErrHubDisabled
@@ -102,8 +124,17 @@ func (h *Hub) SendCommand(ctx context.Context, serverID, name string, payload an
 
 	h.mu.Lock()
 	conn := h.servers[serverID]
+	connected := make([]string, 0, len(h.servers))
+	for id := range h.servers {
+		connected = append(connected, id)
+	}
 	h.mu.Unlock()
 	if conn == nil {
+		h.logger.Warn("game websocket command skipped: server not connected",
+			"serverId", serverID,
+			"name", name,
+			"connectedServers", connected,
+		)
 		return CommandResult{}, ErrNotConnected
 	}
 	return conn.sendCommand(ctx, name, payload)
