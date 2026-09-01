@@ -18,6 +18,7 @@ const (
 	defaultBaseURL  = "https://steamcommunity.com/gid/"
 	maxResponseSize = 4 << 20
 	maxPages        = 100
+	failureBackoff  = time.Minute
 )
 
 type groupSnapshot struct {
@@ -49,6 +50,7 @@ type Resolver struct {
 	mu         sync.RWMutex
 	cache      map[uint64]groupSnapshot
 	groupLocks map[uint64]*sync.Mutex
+	retryAfter map[uint64]time.Time
 }
 
 func New(logger *slog.Logger, ttl time.Duration) *Resolver {
@@ -59,6 +61,9 @@ func New(logger *slog.Logger, ttl time.Duration) *Resolver {
 		ttl = 15 * time.Minute
 	}
 	client := &http.Client{
+		// A nil Transport uses http.DefaultTransport, whose proxy is
+		// http.ProxyFromEnvironment (HTTPS_PROXY/HTTP_PROXY/NO_PROXY). Go does
+		// not read the Windows Internet Options proxy automatically.
 		Timeout: 8 * time.Second,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
@@ -82,6 +87,7 @@ func newResolver(client *http.Client, logger *slog.Logger, ttl time.Duration, ba
 		now:        now,
 		cache:      make(map[uint64]groupSnapshot),
 		groupLocks: make(map[uint64]*sync.Mutex),
+		retryAfter: make(map[uint64]time.Time),
 	}
 }
 
@@ -94,6 +100,10 @@ func (r *Resolver) IsMember(ctx context.Context, groupID, steamID uint64, maxMem
 	if snapshot, ok := r.cached(groupID); ok && r.usable(snapshot, maxMembers) {
 		return snapshotAllows(snapshot, steamID, maxMembers)
 	}
+	if !r.canRefresh(groupID) {
+		stale, ok := r.snapshot(groupID)
+		return ok && snapshotAllows(stale, steamID, maxMembers)
+	}
 
 	lock := r.lockFor(groupID)
 	lock.Lock()
@@ -102,10 +112,17 @@ func (r *Resolver) IsMember(ctx context.Context, groupID, steamID uint64, maxMem
 	if snapshot, ok := r.cached(groupID); ok && r.usable(snapshot, maxMembers) {
 		return snapshotAllows(snapshot, steamID, maxMembers)
 	}
+	if !r.canRefresh(groupID) {
+		stale, ok := r.snapshot(groupID)
+		return ok && snapshotAllows(stale, steamID, maxMembers)
+	}
 
 	stale, hasStale := r.snapshot(groupID)
 	fresh, err := r.fetch(ctx, groupID, maxMembers)
 	if err != nil {
+		r.mu.Lock()
+		r.retryAfter[groupID] = r.now().Add(failureBackoff)
+		r.mu.Unlock()
 		r.logger.Warn("refresh Steam group membership failed", "groupID", groupID, "error", err)
 		if hasStale {
 			return snapshotAllows(stale, steamID, maxMembers)
@@ -114,8 +131,16 @@ func (r *Resolver) IsMember(ctx context.Context, groupID, steamID uint64, maxMem
 	}
 	r.mu.Lock()
 	r.cache[groupID] = fresh
+	delete(r.retryAfter, groupID)
 	r.mu.Unlock()
 	return snapshotAllows(fresh, steamID, maxMembers)
+}
+
+func (r *Resolver) canRefresh(groupID uint64) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	retryAfter, blocked := r.retryAfter[groupID]
+	return !blocked || !r.now().Before(retryAfter)
 }
 
 func (r *Resolver) cached(groupID uint64) (groupSnapshot, bool) {

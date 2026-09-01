@@ -3,6 +3,7 @@ package mysqlrepo
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -80,6 +81,13 @@ func (f fakeGroupMembership) IsMember(_ context.Context, groupID, _ uint64, _ in
 	return f.allowed[groupID]
 }
 
+type blockingGroupMembership struct{}
+
+func (blockingGroupMembership) IsMember(ctx context.Context, _, _ uint64, _ int) bool {
+	<-ctx.Done()
+	return false
+}
+
 func TestFilterExclusiveInventoryMatchesPersonalAndSteamGroupEntitlements(t *testing.T) {
 	const steamID = uint64(76561198000000001)
 	repository := &Repository{groupMembership: fakeGroupMembership{allowed: map[uint64]bool{42: true}}}
@@ -112,6 +120,23 @@ func TestParseSteamGroupLimitUsesStarLightStoreFormat(t *testing.T) {
 		if _, _, ok := parseSteamGroupLimit(invalid); ok {
 			t.Fatalf("expected %q to be rejected", invalid)
 		}
+	}
+}
+
+func TestFilterExclusiveInventoryLimitsAllGroupLookupsToOneShortBudget(t *testing.T) {
+	repository := &Repository{groupMembership: blockingGroupMembership{}}
+	items := []domain.InventoryItem{{ProductID: 1, UseLimit: 2}}
+	for groupID := int64(1); groupID <= 9; groupID++ {
+		items = append(items, domain.InventoryItem{ProductID: groupID + 1, UseLimit: 4, UseLimitInfo: fmt.Sprintf("%d,10", groupID)})
+	}
+
+	started := time.Now()
+	filtered := repository.filterExclusiveInventory(context.Background(), 76561198000000001, items)
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("group entitlement fallback took too long: %s", elapsed)
+	}
+	if len(filtered) != 1 || filtered[0].ProductID != 1 {
+		t.Fatalf("unavailable groups must be omitted without losing regular inventory: %+v", filtered)
 	}
 }
 

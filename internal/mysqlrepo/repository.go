@@ -367,6 +367,12 @@ func (r *Repository) exclusiveInventory(ctx context.Context, steamID uint64, exi
 }
 
 func (r *Repository) filterExclusiveInventory(ctx context.Context, steamID uint64, items []domain.InventoryItem) []domain.InventoryItem {
+	// Steam Community is an optional entitlement source. Keep one short budget
+	// for all groups so an unreachable service can never consume the launcher's
+	// entire login timeout or cancel the subsequent database reads.
+	groupCtx, cancelGroupChecks := context.WithTimeout(ctx, 2*time.Second)
+	defer cancelGroupChecks()
+
 	allowed := make([]bool, len(items))
 	type groupCheck struct {
 		index      int
@@ -398,7 +404,7 @@ func (r *Repository) filterExclusiveInventory(ctx context.Context, steamID uint6
 		check := check
 		go func() {
 			semaphore <- struct{}{}
-			isMember := r.groupMembership.IsMember(ctx, check.groupID, steamID, check.maxMembers)
+			isMember := r.groupMembership.IsMember(groupCtx, check.groupID, steamID, check.maxMembers)
 			<-semaphore
 			results <- groupResult{index: check.index, allowed: isMember}
 		}()

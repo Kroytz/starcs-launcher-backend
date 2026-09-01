@@ -23,6 +23,7 @@ $env:STAR_GAME_API_KEY = "与游戏服 Star-Core 配置一致的长随机密钥"
 $env:STAR_CLIENT_PREFS_API_URL = "Star-Core public.json 中的 api.base_url"
 $env:STAR_CLIENT_PREFS_API_KEY = "Star-Core public.json 中的 api.api_key"
 $env:STAR_CLIENT_PREFS_API_KEY_HEADER = "X-Star-Api-Key"
+$env:HTTPS_PROXY = "http://127.0.0.1:7890" # 可选：Steam 组接口无法直连时配置；不会自动读取 Windows 系统代理
 $env:STAR_DB_USER = "数据库用户"
 $env:STAR_DB_PASSWORD = "数据库密码"
 $env:STAR_DB_HOST = "mysql.example.com"

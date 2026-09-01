@@ -54,6 +54,12 @@ func TestResolverPaginatesCachesAndFallsBackToStaleMembership(t *testing.T) {
 	if got := requests.Load(); got != 3 {
 		t.Fatalf("expired cache should attempt one refresh, got %d requests", got)
 	}
+	if !resolver.IsMember(context.Background(), 42, member, 10) {
+		t.Fatal("expected stale membership during refresh backoff")
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("refresh backoff should suppress repeated failing requests, got %d", got)
+	}
 }
 
 func TestResolverRejectsGroupAboveConfiguredMemberLimit(t *testing.T) {
@@ -70,5 +76,31 @@ func TestResolverRejectsGroupAboveConfiguredMemberLimit(t *testing.T) {
 	}
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("member-limit rejection should not fetch more pages, got %d requests", got)
+	}
+}
+
+func TestResolverBacksOffAfterFailureWithoutCache(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "temporary failure", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	now := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	resolver := newResolver(server.Client(), slog.New(slog.NewTextHandler(io.Discard, nil)), time.Minute, server.URL+"/gid/", func() time.Time { return now })
+	for range 2 {
+		if resolver.IsMember(context.Background(), 42, 76561198000000001, 10) {
+			t.Fatal("failed lookup without a cache must not grant membership")
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("expected one request during failure backoff, got %d", got)
+	}
+
+	now = now.Add(failureBackoff + time.Second)
+	_ = resolver.IsMember(context.Background(), 42, 76561198000000001, 10)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("expected a retry after backoff, got %d requests", got)
 	}
 }
