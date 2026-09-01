@@ -4,11 +4,24 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/starcs/star-launcher-backend/internal/domain"
 )
+
+func TestStarlightStoreProductFilterMatchesStoreVisibility(t *testing.T) {
+	for _, needle := range []string{
+		"show_state IN (1, 2)",
+		"p.type != 3",
+		"starforge",
+	} {
+		if !strings.Contains(starlightStoreProductFilter, needle) {
+			t.Fatalf("filter missing %q: %s", needle, starlightStoreProductFilter)
+		}
+	}
+}
 
 func TestAnnouncementSummaryUsesFirstTextBlock(t *testing.T) {
 	raw := `{"sections":[{"title":"更新说明","blocks":[{"kind":"paragraph","text":"第一段公告内容"}]}]}`

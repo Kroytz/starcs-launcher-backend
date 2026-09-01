@@ -29,6 +29,14 @@ var (
 	ErrChallengeDBUnavailable = errors.New("challenge database unavailable")
 )
 
+// starlightStoreProductFilter mirrors StarLightStore CanShowInStore() and the
+// launcher store catalog: only AllShow(1)/OnlyStoreShow(2), no exclusive
+// type=3 products, and no StarForge pool items.
+const starlightStoreProductFilter = `
+		  AND p.show_state IN (1, 2)
+		  AND p.type != 3
+		  AND LOWER(COALESCE(p.label, '')) NOT LIKE '%starforge%'`
+
 type Repository struct {
 	db                        *sql.DB
 	challengeDB               *sql.DB
@@ -628,12 +636,12 @@ func (r *Repository) PurchaseStarlight(ctx context.Context, steamID uint64, pric
 		productType int
 		productName string
 	)
-	// 与插件一致：可售性只看价格档位 state，不看 sls_product.state（该字段已被插件废弃）
+	// 可售性：价格档位 state + 与商城列表一致的商品可见性（show_state / type / label）
 	err := r.db.QueryRowContext(ctx, `
 		SELECT pp.product_id, pp.price, COALESCE(pp.days, 0), COALESCE(pp.quantity, 1), p.type, p.name
 		FROM sls_product_pricing AS pp
 		INNER JOIN sls_product AS p ON p.id = pp.product_id
-		WHERE pp.id = ? AND pp.state = 1 AND pp.currency_id = 1
+		WHERE pp.id = ? AND pp.state = 1 AND pp.currency_id = 1`+starlightStoreProductFilter+`
 		LIMIT 1
 	`, pricingID).Scan(&productID, &price, &days, &quantity, &productType, &productName)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -641,10 +649,6 @@ func (r *Repository) PurchaseStarlight(ctx context.Context, steamID uint64, pric
 	}
 	if err != nil {
 		return 0, fmt.Errorf("query starlight pricing: %w", err)
-	}
-	if productType == 3 {
-		// 限定型：插件按 UseLimit 动态发放，不进购买流程
-		return 0, ErrPricingNotFound
 	}
 	// 启动器暂不允许 0 元购（插件允许，这里主动收紧）
 	if price <= 0 || (productType == 2 && quantity <= 0) {
@@ -965,10 +969,7 @@ func (r *Repository) loadStoreItems(ctx context.Context) ([]domain.StoreItem, er
 			LIMIT 1
 		)
 		LEFT JOIN scs_file AS f ON f.id = pv.file_id
-		WHERE pp.state = 1 AND pp.currency_id = 1
-		  AND p.show_state IN (1, 2)
-		  AND p.type != 3
-		  AND LOWER(COALESCE(p.label, '')) NOT LIKE '%starforge%'
+		WHERE pp.state = 1 AND pp.currency_id = 1`+starlightStoreProductFilter+`
 		ORDER BY pp.sort ASC, p.rarity_id DESC, p.id ASC
 	`)
 	if err != nil {
