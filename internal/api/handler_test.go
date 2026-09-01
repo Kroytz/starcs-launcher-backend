@@ -509,6 +509,36 @@ func TestLoginRejectsWrongPasswordWithInvalidCredentialsCode(t *testing.T) {
 	}
 }
 
+func TestLoginRateLimitsRepeatedFailures(t *testing.T) {
+	handler := newAuthenticatedHandler()
+	for i := 0; i < 10; i++ {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"steamId":"76561198000000001","password":"wrong-password"}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.RemoteAddr = "203.0.113.50:12345"
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected status 401, got %d: %s", i+1, response.Code, response.Body.String())
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"steamId":"76561198000000001","password":"wrong-password"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "203.0.113.50:12345"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected status 429, got %d: %s", response.Code, response.Body.String())
+	}
+	var body envelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != 4013 {
+		t.Fatalf("expected rate limited code 4013, got %d", body.Code)
+	}
+}
+
 func TestEquipmentEndpointsReadAndMutateServerPreferences(t *testing.T) {
 	service := &fakeEquipmentService{}
 	handler := newEquipmentHandler(service)
@@ -591,11 +621,11 @@ type mutablePasswordPlayers struct {
 	hash string
 }
 
-func (players *mutablePasswordPlayers) Authenticate(_ context.Context, steamID uint64, password string) error {
+func (players *mutablePasswordPlayers) Authenticate(ctx context.Context, steamID uint64, password string) error {
 	if steamID != 76561198000000001 || players.hash == "" {
 		return mysqlrepo.ErrInvalidCredentials
 	}
-	valid, err := passwordauth.Verify(password, players.hash)
+	valid, err := passwordauth.Verify(ctx, password, players.hash)
 	if err != nil {
 		return err
 	}
@@ -647,7 +677,7 @@ func TestGamePasswordEndpointSetsAndChangesPassword(t *testing.T) {
 	if setResponse.Code != http.StatusOK {
 		t.Fatalf("initial password set failed: %d %s", setResponse.Code, setResponse.Body.String())
 	}
-	valid, err := passwordauth.Verify("first-password", players.hash)
+	valid, err := passwordauth.Verify(context.Background(), "first-password", players.hash)
 	if err != nil || !valid {
 		t.Fatalf("stored initial hash is invalid: valid=%v err=%v", valid, err)
 	}
@@ -659,7 +689,7 @@ func TestGamePasswordEndpointSetsAndChangesPassword(t *testing.T) {
 	if changeResponse.Code != http.StatusOK {
 		t.Fatalf("password change failed: %d %s", changeResponse.Code, changeResponse.Body.String())
 	}
-	valid, err = passwordauth.Verify("second-password", players.hash)
+	valid, err = passwordauth.Verify(context.Background(), "second-password", players.hash)
 	if err != nil || !valid {
 		t.Fatalf("stored changed hash is invalid: valid=%v err=%v", valid, err)
 	}

@@ -105,7 +105,7 @@ func (r *Repository) Authenticate(ctx context.Context, steamID uint64, password 
 	if encoded == "" {
 		return ErrInvalidCredentials
 	}
-	valid, err := passwordauth.Verify(password, encoded)
+	valid, err := passwordauth.Verify(ctx, password, encoded)
 	if err != nil {
 		return fmt.Errorf("verify game password hash: %w", err)
 	}

@@ -28,6 +28,7 @@ const (
 	sessionExpiredCode     = 4010
 	credentialsStaleCode   = 4011
 	invalidCredentialsCode = 4012
+	authBusyCode           = 5004
 )
 
 type envelope struct {
@@ -115,6 +116,7 @@ type Handler struct {
 	skipPasswordAuth bool
 	gameAPIKey       string
 	equipment        EquipmentService
+	authLimiter      *authRateLimiter
 	sessionMu        sync.Mutex
 	sessions         map[string]session
 }
@@ -144,6 +146,7 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 		logger:           logger,
 		allowedOrigins:   make(map[string]struct{}, len(allowedOrigins)),
 		skipPasswordAuth: skipPasswordAuth,
+		authLimiter:      newAuthRateLimiter(),
 		sessions:         make(map[string]session),
 	}
 	for _, option := range options {
@@ -865,8 +868,12 @@ func (h *Handler) handleGamePassword(w http.ResponseWriter, r *http.Request) {
 		h.writeRepositoryError(w, "query current game password", err)
 		return
 	}
-	encoded, err := passwordauth.Hash(request.NewPassword)
+	encoded, err := passwordauth.Hash(r.Context(), request.NewPassword)
 	if err != nil {
+		if errors.Is(err, passwordauth.ErrBusy) {
+			h.writeError(w, http.StatusServiceUnavailable, authBusyCode, "认证服务繁忙，请稍后重试")
+			return
+		}
 		h.logger.Error("hash new game password", "error", err)
 		h.writeError(w, http.StatusInternalServerError, 5000, "生成密码摘要失败")
 		return
@@ -908,13 +915,9 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !h.skipPasswordAuth {
-		if err := h.players.Authenticate(r.Context(), steamID, request.Password); err != nil {
-			if errors.Is(err, mysqlrepo.ErrInvalidCredentials) {
-				h.writeError(w, http.StatusUnauthorized, invalidCredentialsCode, "Steam64 或游戏内密码错误")
-				return
-			}
-			h.logger.Error("authenticate player", "error", err)
-			h.writeError(w, http.StatusServiceUnavailable, 5002, "账号数据库暂时不可用")
+		if !h.authenticateWithLimits(w, r, steamID, request.Password, func() {
+			h.writeError(w, http.StatusUnauthorized, invalidCredentialsCode, "Steam64 或游戏内密码错误")
+		}) {
 			return
 		}
 	}
@@ -978,15 +981,34 @@ func (h *Handler) verifyOperationPassword(w http.ResponseWriter, r *http.Request
 		h.writeError(w, http.StatusBadRequest, 4001, "此操作需要再次校验游戏内密码")
 		return false
 	}
+	return h.authenticateWithLimits(w, r, steamID, password, func() {
+		h.sessionMu.Lock()
+		delete(h.sessions, token)
+		h.sessionMu.Unlock()
+		h.writeError(w, http.StatusUnauthorized, credentialsStaleCode, "密码不正确或已变更，请重新登录")
+	})
+}
+
+func (h *Handler) authenticateWithLimits(w http.ResponseWriter, r *http.Request, steamID uint64, password string, onInvalidCredentials func()) bool {
+	ip := clientIP(r)
+	now := time.Now()
+	if !h.authLimiter.allow(ip, steamID, now) {
+		h.writeError(w, http.StatusTooManyRequests, authRateLimitedCode, "登录尝试过于频繁，请稍后再试")
+		return false
+	}
+	h.authLimiter.recordAttempt(ip, now)
+
 	if err := h.players.Authenticate(r.Context(), steamID, password); err != nil {
 		if errors.Is(err, mysqlrepo.ErrInvalidCredentials) {
-			h.sessionMu.Lock()
-			delete(h.sessions, token)
-			h.sessionMu.Unlock()
-			h.writeError(w, http.StatusUnauthorized, credentialsStaleCode, "密码不正确或已变更，请重新登录")
+			h.authLimiter.recordFailure(ip, steamID, time.Now())
+			onInvalidCredentials()
 			return false
 		}
-		h.logger.Error("reauthenticate player operation", "error", err)
+		if errors.Is(err, passwordauth.ErrBusy) {
+			h.writeError(w, http.StatusServiceUnavailable, authBusyCode, "认证服务繁忙，请稍后重试")
+			return false
+		}
+		h.logger.Error("authenticate player", "error", err)
 		h.writeError(w, http.StatusServiceUnavailable, 5002, "账号数据库暂时不可用")
 		return false
 	}
