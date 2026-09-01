@@ -34,6 +34,9 @@ type Repository struct {
 	challengeDB               *sql.DB
 	challengeCatalogAvailable bool
 	groupMembership           GroupMembershipChecker
+	announcementCache         publicCatalogEntry[[]domain.Announcement]
+	storeItemCache            publicCatalogEntry[[]domain.StoreItem]
+	mapCache                  publicCatalogEntry[[]domain.MapResource]
 }
 
 // GroupMembershipChecker resolves the Steam Community group entitlement used
@@ -832,6 +835,16 @@ func (r *Repository) PurchaseStardust(ctx context.Context, steamID uint64, itemT
 }
 
 func (r *Repository) Announcements(ctx context.Context) ([]domain.Announcement, error) {
+	items, err := r.announcementCache.getOrLoad(publicCatalogTTL, func() ([]domain.Announcement, error) {
+		return r.loadAnnouncements(ctx)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append([]domain.Announcement(nil), items...), nil
+}
+
+func (r *Repository) loadAnnouncements(ctx context.Context) ([]domain.Announcement, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT a.id, a.title, a.render_payload, a.type, a.published_at, a.created,
 		       COALESCE(cover.relative_path, ''), COALESCE(detail.relative_path, '')
@@ -848,16 +861,29 @@ func (r *Repository) Announcements(ctx context.Context) ([]domain.Announcement, 
 		return nil, fmt.Errorf("query announcements: %w", err)
 	}
 	defer rows.Close()
-	items := make([]domain.Announcement, 0)
+
+	type announcementRow struct {
+		id          uint64
+		title       string
+		payload     string
+		kind        int
+		publishedAt time.Time
+		coverPath   string
+		detailPath  string
+	}
+	scanned := make([]announcementRow, 0)
+	imageIDs := make([]uint64, 0)
 	for rows.Next() {
-		var id uint64
-		var title string
-		var payload sql.NullString
-		var announcementType int
-		var published sql.NullTime
-		var created time.Time
-		var coverPath string
-		var detailPath string
+		var (
+			id               uint64
+			title            string
+			payload          sql.NullString
+			announcementType int
+			published        sql.NullTime
+			created          time.Time
+			coverPath        string
+			detailPath       string
+		)
 		if err := rows.Scan(&id, &title, &payload, &announcementType, &published, &created, &coverPath, &detailPath); err != nil {
 			return nil, fmt.Errorf("scan announcement: %w", err)
 		}
@@ -865,30 +891,65 @@ func (r *Repository) Announcements(ctx context.Context) ([]domain.Announcement, 
 		if published.Valid {
 			publishedAt = published.Time
 		}
-		renderPayload, err := r.resolveAnnouncementPayload(ctx, payload.String)
-		if err != nil {
-			return nil, fmt.Errorf("resolve announcement %d payload: %w", id, err)
-		}
-		items = append(items, domain.Announcement{
-			ID:             strconv.FormatUint(id, 10),
-			Title:          title,
-			Content:        announcementSummary(payload.String),
-			Level:          map[bool]string{true: "event", false: "info"}[announcementType == 1],
-			Dismissible:    true,
-			DisplayDate:    publishedAt.Format("01 / 02"),
-			PublishedAt:    publishedAt.Format(time.RFC3339),
-			CoverImageURL:  publicFileURL(coverPath),
-			DetailImageURL: publicFileURL(detailPath),
-			RenderPayload:  renderPayload,
+		payloadText := payload.String
+		scanned = append(scanned, announcementRow{
+			id:          id,
+			title:       title,
+			payload:     payloadText,
+			kind:        announcementType,
+			publishedAt: publishedAt,
+			coverPath:   coverPath,
+			detailPath:  detailPath,
 		})
+		imageIDs = append(imageIDs, collectAnnouncementImageIDs(payloadText)...)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate announcements: %w", err)
+	}
+	// Close the result set before resolving payload images so we never hold a
+	// rows cursor while borrowing more connections from the tiny pool.
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close announcement rows: %w", err)
+	}
+
+	paths, err := r.loadFileRelativePaths(ctx, imageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load announcement images: %w", err)
+	}
+
+	items := make([]domain.Announcement, 0, len(scanned))
+	for _, row := range scanned {
+		renderPayload, err := resolveAnnouncementPayloadWithFiles(row.payload, paths)
+		if err != nil {
+			return nil, fmt.Errorf("resolve announcement %d payload: %w", row.id, err)
+		}
+		items = append(items, domain.Announcement{
+			ID:             strconv.FormatUint(row.id, 10),
+			Title:          row.title,
+			Content:        announcementSummary(row.payload),
+			Level:          map[bool]string{true: "event", false: "info"}[row.kind == 1],
+			Dismissible:    true,
+			DisplayDate:    row.publishedAt.Format("01 / 02"),
+			PublishedAt:    row.publishedAt.Format(time.RFC3339),
+			CoverImageURL:  publicFileURL(row.coverPath),
+			DetailImageURL: publicFileURL(row.detailPath),
+			RenderPayload:  renderPayload,
+		})
 	}
 	return items, nil
 }
 
 func (r *Repository) StoreItems(ctx context.Context) ([]domain.StoreItem, error) {
+	items, err := r.storeItemCache.getOrLoad(publicCatalogTTL, func() ([]domain.StoreItem, error) {
+		return r.loadStoreItems(ctx)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append([]domain.StoreItem(nil), items...), nil
+}
+
+func (r *Repository) loadStoreItems(ctx context.Context) ([]domain.StoreItem, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT pp.id, p.id, p.name, p.desc, p.label, p.type, p.rarity_id,
 		       COALESCE(r.name, ''), pp.price, pp.sort, COALESCE(f.relative_path, ''),
@@ -1130,6 +1191,16 @@ func (r *Repository) challengeStoreItems(ctx context.Context) ([]domain.StoreIte
 }
 
 func (r *Repository) Maps(ctx context.Context) ([]domain.MapResource, error) {
+	items, err := r.mapCache.getOrLoad(publicCatalogTTL, func() ([]domain.MapResource, error) {
+		return r.loadMaps(ctx)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append([]domain.MapResource(nil), items...), nil
+}
+
+func (r *Repository) loadMaps(ctx context.Context) ([]domain.MapResource, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT m.id, m.name, m.short_name, m.workshop_id, d.name, m.desc
 		FROM scs_cs2_map AS m
@@ -1436,7 +1507,83 @@ func announcementPayload(raw string) json.RawMessage {
 	return json.RawMessage(raw)
 }
 
-func (r *Repository) resolveAnnouncementPayload(ctx context.Context, raw string) (json.RawMessage, error) {
+func collectAnnouncementImageIDs(raw string) []uint64 {
+	payload := announcementPayload(raw)
+	var document map[string]any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		return nil
+	}
+	ids := make([]uint64, 0)
+	seen := make(map[uint64]struct{})
+	sections, _ := document["sections"].([]any)
+	for _, rawSection := range sections {
+		section, _ := rawSection.(map[string]any)
+		blocks, _ := section["blocks"].([]any)
+		for _, rawBlock := range blocks {
+			block, _ := rawBlock.(map[string]any)
+			imageID, ok := block["imageId"].(float64)
+			if !ok || imageID <= 0 {
+				continue
+			}
+			id := uint64(imageID)
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func (r *Repository) loadFileRelativePaths(ctx context.Context, ids []uint64) (map[uint64]string, error) {
+	paths := make(map[uint64]string, len(ids))
+	if len(ids) == 0 {
+		return paths, nil
+	}
+	unique := make([]uint64, 0, len(ids))
+	seen := make(map[uint64]struct{}, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return paths, nil
+	}
+
+	placeholders := make([]string, len(unique))
+	args := make([]any, len(unique))
+	for index, id := range unique {
+		placeholders[index] = "?"
+		args[index] = id
+	}
+	query := `SELECT id, COALESCE(relative_path, '') FROM scs_file WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uint64
+		var relativePath string
+		if err := rows.Scan(&id, &relativePath); err != nil {
+			return nil, err
+		}
+		paths[id] = relativePath
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return paths, nil
+}
+
+func resolveAnnouncementPayloadWithFiles(raw string, paths map[uint64]string) (json.RawMessage, error) {
 	payload := announcementPayload(raw)
 	var document map[string]any
 	if err := json.Unmarshal(payload, &document); err != nil {
@@ -1452,14 +1599,7 @@ func (r *Repository) resolveAnnouncementPayload(ctx context.Context, raw string)
 			if !ok || imageID <= 0 {
 				continue
 			}
-			var relativePath string
-			err := r.db.QueryRowContext(ctx, `SELECT COALESCE(relative_path, '') FROM scs_file WHERE id = ? LIMIT 1`, uint64(imageID)).Scan(&relativePath)
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
+			relativePath := paths[uint64(imageID)]
 			if imageURL := publicFileURL(relativePath); imageURL != "" {
 				block["imageUrl"] = imageURL
 			}

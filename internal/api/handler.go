@@ -121,6 +121,7 @@ type Handler struct {
 	equipment        EquipmentService
 	gameWS           *gamews.Hub
 	authLimiter      *authRateLimiter
+	publicLimiter    *publicReadLimiter
 	sessionMu        sync.Mutex
 	sessions         map[string]session
 }
@@ -157,6 +158,7 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 		allowedOrigins:   make(map[string]struct{}, len(allowedOrigins)),
 		skipPasswordAuth: skipPasswordAuth,
 		authLimiter:      newAuthRateLimiter(),
+		publicLimiter:    newPublicReadLimiter(),
 		sessions:         make(map[string]session),
 	}
 	for _, option := range options {
@@ -229,6 +231,9 @@ func (h *Handler) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	if !h.requireGET(w, r) {
 		return
 	}
+	if !h.allowPublicRead(w, r) {
+		return
+	}
 	bootstrap := h.store.Bootstrap()
 	if h.players != nil {
 		announcements, err := h.players.Announcements(r.Context())
@@ -257,6 +262,9 @@ func (h *Handler) handleStoreItems(w http.ResponseWriter, r *http.Request) {
 	if !h.requireGET(w, r) {
 		return
 	}
+	if !h.allowPublicRead(w, r) {
+		return
+	}
 
 	currency := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("currency")))
 	if currency != "" && currency != "starlight" && currency != "stardust" && currency != "afdian" {
@@ -272,7 +280,7 @@ func (h *Handler) handleStoreItems(w http.ResponseWriter, r *http.Request) {
 		h.writeRepositoryError(w, "query store items", err)
 		return
 	}
-	filtered := items[:0]
+	filtered := make([]domain.StoreItem, 0, len(items))
 	for _, item := range items {
 		if currency == "" || item.Currency == currency {
 			filtered = append(filtered, item)
@@ -283,6 +291,9 @@ func (h *Handler) handleStoreItems(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleMaps(w http.ResponseWriter, r *http.Request) {
 	if !h.requireGET(w, r) {
+		return
+	}
+	if !h.allowPublicRead(w, r) {
 		return
 	}
 	if h.players == nil {
