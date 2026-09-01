@@ -17,6 +17,7 @@ import (
 
 	"github.com/starcs/star-launcher-backend/internal/demo"
 	"github.com/starcs/star-launcher-backend/internal/domain"
+	"github.com/starcs/star-launcher-backend/internal/gamews"
 	"github.com/starcs/star-launcher-backend/internal/mysqlrepo"
 	"github.com/starcs/star-launcher-backend/internal/passwordauth"
 )
@@ -116,6 +117,7 @@ type Handler struct {
 	skipPasswordAuth bool
 	gameAPIKey       string
 	equipment        EquipmentService
+	gameWS           *gamews.Hub
 	authLimiter      *authRateLimiter
 	sessionMu        sync.Mutex
 	sessions         map[string]session
@@ -132,6 +134,12 @@ func WithGameAPIKey(key string) HandlerOption {
 func WithEquipmentService(service EquipmentService) HandlerOption {
 	return func(handler *Handler) {
 		handler.equipment = service
+	}
+}
+
+func WithGameWS(hub *gamews.Hub) HandlerOption {
+	return func(handler *Handler) {
+		handler.gameWS = hub
 	}
 }
 
@@ -179,6 +187,11 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/api/v1/me/store/purchase", h.handleStarlightPurchase)
 	mux.HandleFunc("/api/v1/me/stardust/purchase", h.handleStardustPurchase)
 	mux.HandleFunc("/internal/v1/game-password", h.handleGamePassword)
+	if h.gameWS != nil {
+		mux.Handle("/internal/v1/ws/game", h.gameWS)
+		mux.HandleFunc("POST /internal/v1/servers/{serverId}/commands", h.handleGameServerCommand)
+		mux.HandleFunc("GET /internal/v1/servers", h.handleListGameServers)
+	}
 
 	return h.withLogging(h.withCORS(mux))
 }

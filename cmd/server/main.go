@@ -15,6 +15,7 @@ import (
 	"github.com/starcs/star-launcher-backend/internal/clientprefs"
 	"github.com/starcs/star-launcher-backend/internal/config"
 	"github.com/starcs/star-launcher-backend/internal/demo"
+	"github.com/starcs/star-launcher-backend/internal/gamews"
 	"github.com/starcs/star-launcher-backend/internal/mysqlrepo"
 	"github.com/starcs/star-launcher-backend/internal/steamgroup"
 )
@@ -43,7 +44,11 @@ func main() {
 	}
 	gameAPIKey := strings.TrimSpace(os.Getenv("STAR_GAME_API_KEY"))
 	if gameAPIKey == "" {
-		logger.Warn("STAR_GAME_API_KEY is empty; the game-server password update endpoint is disabled")
+		logger.Warn("STAR_GAME_API_KEY is empty; the game-server password update endpoint and websocket control plane are disabled")
+	}
+	gameWS := gamews.NewHub(logger, gameAPIKey)
+	if gameWS.Enabled() {
+		logger.Info("game websocket control plane enabled", "path", "/internal/v1/ws/game")
 	}
 	var equipment api.EquipmentService
 	clientPrefsURL := strings.TrimSpace(os.Getenv("STAR_CLIENT_PREFS_API_URL"))
@@ -107,11 +112,13 @@ func main() {
 			origins,
 			skipPasswordAuth,
 			api.WithGameAPIKey(gameAPIKey),
+			api.WithGameWS(gameWS),
 			api.WithEquipmentService(equipment),
 		),
+		// ReadHeaderTimeout still bounds request headers. Full Read/Write timeouts are
+		// disabled so long-lived game WebSocket sessions are not killed; gamews applies
+		// its own read-idle and write deadlines.
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
