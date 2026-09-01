@@ -732,7 +732,14 @@ func (h *Handler) handleStardustEquipment(w http.ResponseWriter, r *http.Request
 	}
 	if err != nil {
 		h.logger.Error("apply stardust equipment", "equip", equip, "type", request.ItemType, "unique_id", request.UniqueID, "error", err)
-		h.writeError(w, http.StatusBadGateway, 5002, err.Error())
+		switch {
+		case errors.Is(err, mysqlrepo.ErrStardustItemNotOwned):
+			h.writeError(w, http.StatusForbidden, 4003, "该物品不在当前玩家的有效星尘库存中")
+		case errors.Is(err, mysqlrepo.ErrChallengeDBUnavailable):
+			h.writeError(w, http.StatusServiceUnavailable, 5003, "星尘装备服务尚未配置")
+		default:
+			h.writeError(w, http.StatusBadGateway, 5002, "同步星尘装备配置失败")
+		}
 		return
 	}
 

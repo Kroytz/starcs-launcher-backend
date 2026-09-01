@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -802,7 +803,10 @@ func (players *stardustTrackingPlayers) StardustEquipments(_ context.Context, _ 
 
 func (players *stardustTrackingPlayers) EquipStardust(_ context.Context, _ uint64, itemType, uniqueID string) error {
 	if uniqueID == "not-owned" {
-		return errors.New("该物品不在当前玩家的有效星尘库存中")
+		return mysqlrepo.ErrStardustItemNotOwned
+	}
+	if uniqueID == "db-boom" {
+		return fmt.Errorf("Error 1452 (23000): Cannot add or update a child row: a foreign key constraint fails (db_challenge.starduststore_equipments, CONSTRAINT fk_equip)")
 	}
 	players.equipped[itemType] = uniqueID
 	return nil
@@ -854,8 +858,24 @@ func TestStardustEquipmentEquipUnequipAndTypeMutex(t *testing.T) {
 	}
 
 	// 未拥有的物品应被拒绝
-	if response := call("/api/v1/me/stardust/equip", `{"itemType":"chatcolor","uniqueId":"not-owned"}`); response.Code == http.StatusOK {
-		t.Fatalf("expected unowned stardust item rejection, got %d", response.Code)
+	if response := call("/api/v1/me/stardust/equip", `{"itemType":"chatcolor","uniqueId":"not-owned"}`); response.Code != http.StatusForbidden {
+		t.Fatalf("expected unowned stardust item rejection 403, got %d %s", response.Code, response.Body.String())
+	}
+
+	// 数据库异常不得把驱动/表名泄漏给客户端
+	if response := call("/api/v1/me/stardust/equip", `{"itemType":"chatcolor","uniqueId":"db-boom"}`); response.Code != http.StatusBadGateway {
+		t.Fatalf("expected db failure 502, got %d %s", response.Code, response.Body.String())
+	} else {
+		var body envelope
+		if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(body.Msg, "starduststore") || strings.Contains(body.Msg, "1452") || strings.Contains(body.Msg, "CONSTRAINT") {
+			t.Fatalf("client message leaked database details: %q", body.Msg)
+		}
+		if body.Msg != "同步星尘装备配置失败" {
+			t.Fatalf("unexpected client message: %q", body.Msg)
+		}
 	}
 }
 

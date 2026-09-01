@@ -25,6 +25,8 @@ var (
 	ErrInsufficientStardust  = errors.New("insufficient stardust")
 	ErrProductAlreadyOwned   = errors.New("product already owned")
 	ErrPermanentVersionOwned = errors.New("permanent version already owned")
+	ErrStardustItemNotOwned  = errors.New("stardust item not owned")
+	ErrChallengeDBUnavailable = errors.New("challenge database unavailable")
 )
 
 type Repository struct {
@@ -557,7 +559,7 @@ func (r *Repository) StardustEquipments(ctx context.Context, steamID uint64) ([]
 // EquipStardust 装备一件星尘物品；同一 Type 互斥，先删除同 Type 旧装备再写入新装备。
 func (r *Repository) EquipStardust(ctx context.Context, steamID uint64, itemType, uniqueID string) error {
 	if r.challengeDB == nil {
-		return errors.New("challenge database is not configured")
+		return ErrChallengeDBUnavailable
 	}
 	var slot int
 	err := r.challengeDB.QueryRowContext(ctx, `
@@ -577,7 +579,7 @@ func (r *Repository) EquipStardust(ctx context.Context, steamID uint64, itemType
 		LIMIT 1
 	`, steamID, itemType, uniqueID).Scan(&slot)
 	if errors.Is(err, sql.ErrNoRows) {
-		return errors.New("该物品不在当前玩家的有效星尘库存中")
+		return ErrStardustItemNotOwned
 	}
 	if err != nil {
 		return fmt.Errorf("validate stardust item ownership: %w", err)
@@ -603,7 +605,7 @@ func (r *Repository) EquipStardust(ctx context.Context, steamID uint64, itemType
 // UnequipStardust 卸下一件星尘物品。
 func (r *Repository) UnequipStardust(ctx context.Context, steamID uint64, itemType, uniqueID string) error {
 	if r.challengeDB == nil {
-		return errors.New("challenge database is not configured")
+		return ErrChallengeDBUnavailable
 	}
 	if _, err := r.challengeDB.ExecContext(ctx, `DELETE FROM starduststore_equipments WHERE SteamID = ? AND BINARY Type = BINARY ? AND BINARY UniqueId = BINARY ?`, steamID, itemType, uniqueID); err != nil {
 		return fmt.Errorf("delete stardust equipment: %w", err)
