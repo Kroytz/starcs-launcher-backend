@@ -90,6 +90,8 @@ type StarlightPurchaseResult struct {
 	Inventory       []InventoryItem       `json:"inventory"`
 	PurchaseHistory []PurchaseHistoryItem `json:"purchaseHistory"`
 	StoreItems      []StoreItem           `json:"storeItems"`
+	// RefreshComplete 为 false 表示扣款发货已成功，但后续展示数据刷新不完整；客户端应保留本地列表并仅更新余额。
+	RefreshComplete bool `json:"refreshComplete"`
 }
 
 // StardustPurchaseResult 星尘商店购买成功后的最新账号状态。
@@ -97,6 +99,8 @@ type StardustPurchaseResult struct {
 	Stardust   int64           `json:"stardust"`
 	Inventory  []InventoryItem `json:"inventory"`
 	StoreItems []StoreItem     `json:"storeItems"`
+	// RefreshComplete 为 false 表示扣款发货已成功，但后续展示数据刷新不完整；客户端应保留本地列表并仅更新余额。
+	RefreshComplete bool `json:"refreshComplete"`
 }
 
 type Profile struct {

@@ -56,7 +56,7 @@ func (fakePlayers) Inventory(_ context.Context, steamID uint64) ([]domain.Invent
 		Type:         "武器外观",
 		Rarity:       "SR",
 		Quantity:     1,
-		Mode:         "ALL",
+		Mode:         "",
 		UseLimit:     1,
 		WeaponPrefab: "weapon_ak47",
 		WeaponType:   "CommonRifle",
@@ -581,6 +581,56 @@ func TestEquipmentEndpointsReadAndMutateServerPreferences(t *testing.T) {
 	}
 }
 
+func TestEquipmentMutationRejectsUnsupportedModeCode(t *testing.T) {
+	service := &fakeEquipmentService{}
+	handler := newEquipmentHandler(service)
+	token := authenticateTestPlayer(t, handler)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/me/equipment/equip", strings.NewReader(`{"productId":42,"modes":["XYZ"],"team":"all"}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("X-StarCS-Reauth", "valid-password")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected unsupported mode rejection, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+type modeRestrictedPlayers struct {
+	fakePlayers
+	mode string
+}
+
+func (players modeRestrictedPlayers) Inventory(_ context.Context, _ uint64) ([]domain.InventoryItem, error) {
+	items, err := players.fakePlayers.Inventory(context.Background(), 0)
+	if err != nil {
+		return nil, err
+	}
+	items[0].Mode = players.mode
+	return items, nil
+}
+
+func TestEquipmentMutationRejectsProductDisallowedMode(t *testing.T) {
+	service := &fakeEquipmentService{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := api.NewHandler(demo.NewStore(), modeRestrictedPlayers{mode: "ZM"}, logger, nil, false, api.WithEquipmentService(service))
+	token := authenticateTestPlayer(t, handler)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/me/equipment/equip", strings.NewReader(`{"productId":42,"modes":["SCP"],"team":"all"}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("X-StarCS-Reauth", "valid-password")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected product mode rejection, got %d: %s", response.Code, response.Body.String())
+	}
+	var body envelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body.Msg, "SCP") {
+		t.Fatalf("expected SCP mode rejection message, got %q", body.Msg)
+	}
+}
+
 func TestEquipmentMutationRejectsUnownedProduct(t *testing.T) {
 	service := &fakeEquipmentService{}
 	handler := newEquipmentHandler(service)
@@ -906,6 +956,48 @@ func TestStarlightPurchaseRequiresLogin(t *testing.T) {
 	newAuthenticatedHandler().ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status 401, got %d", response.Code)
+	}
+}
+
+type purchaseRefreshFailPlayers struct {
+	purchaseTrackingPlayers
+}
+
+func (players *purchaseRefreshFailPlayers) Inventory(_ context.Context, _ uint64) ([]domain.InventoryItem, error) {
+	return nil, errors.New("inventory unavailable")
+}
+
+func TestStarlightPurchaseSucceedsWhenPostCommitRefreshFails(t *testing.T) {
+	players := &purchaseRefreshFailPlayers{purchaseTrackingPlayers{balance: 250}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := api.NewHandler(demo.NewStore(), players, logger, nil, false)
+	token := authenticateTestPlayer(t, handler)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/me/store/purchase", strings.NewReader(`{"pricingId":1}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("X-StarCS-Reauth", "valid-password")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 after committed purchase, got %d %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			Starlight       int64 `json:"starlight"`
+			RefreshComplete bool  `json:"refreshComplete"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Code != 2000 || payload.Data.Starlight != 150 || payload.Data.RefreshComplete {
+		t.Fatalf("expected committed purchase success with incomplete refresh, got %+v", payload)
+	}
+	if players.balance != 150 {
+		t.Fatalf("purchase should remain committed, balance=%d", players.balance)
 	}
 }
 

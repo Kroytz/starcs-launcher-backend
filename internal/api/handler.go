@@ -490,11 +490,13 @@ func (h *Handler) handleEquipmentMutation(w http.ResponseWriter, r *http.Request
 	}
 	modes, err := validateEquipmentModes(request.Modes)
 	if err != nil {
+		h.logger.Warn("equipment mutation rejected", "equip", equip, "product_id", request.ProductID, "reason", err.Error())
 		h.writeError(w, http.StatusBadRequest, 4001, err.Error())
 		return
 	}
 	team := strings.ToLower(strings.TrimSpace(request.Team))
 	if team != "all" && team != "ct" && team != "t" {
+		h.logger.Warn("equipment mutation rejected", "equip", equip, "product_id", request.ProductID, "reason", "invalid team")
 		h.writeError(w, http.StatusBadRequest, 4001, "阵营仅支持 all、ct 或 t")
 		return
 	}
@@ -512,6 +514,7 @@ func (h *Handler) handleEquipmentMutation(w http.ResponseWriter, r *http.Request
 	}
 	mutation, err := buildEquipmentMutation(item, modes, team, equip)
 	if err != nil {
+		h.logger.Warn("equipment mutation rejected", "equip", equip, "product_id", request.ProductID, "modes", modes, "item_mode", item.Mode, "item_type", item.Type, "reason", err.Error())
 		h.writeError(w, http.StatusBadRequest, 4001, err.Error())
 		return
 	}
@@ -575,25 +578,44 @@ func (h *Handler) handleStarlightPurchase(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// 事务已提交：后续刷新失败也必须返回购买成功，避免客户端重试导致重复扣款发货。
+	result := domain.StarlightPurchaseResult{
+		Starlight:       starlight,
+		Inventory:       []domain.InventoryItem{},
+		PurchaseHistory: []domain.PurchaseHistoryItem{},
+		StoreItems:      []domain.StoreItem{},
+		RefreshComplete: true,
+	}
 	inventory, err := h.players.Inventory(r.Context(), steamID)
 	if err != nil {
 		h.logger.Error("load inventory after purchase", "error", err)
-		h.writeError(w, http.StatusBadGateway, 5002, "购买成功，但刷新库存失败")
-		return
+		result.RefreshComplete = false
+	} else {
+		result.Inventory = inventory
 	}
 	history, err := h.players.PurchaseHistory(r.Context(), steamID)
 	if err != nil {
 		h.logger.Error("load purchase history after purchase", "error", err)
-		h.writeError(w, http.StatusBadGateway, 5002, "购买成功，但刷新购买记录失败")
-		return
+		result.RefreshComplete = false
+	} else {
+		result.PurchaseHistory = history
 	}
 	storeItems, err := h.players.StoreItemsForPlayer(r.Context(), steamID)
 	if err != nil {
 		h.logger.Error("load store items after purchase", "error", err)
-		h.writeError(w, http.StatusBadGateway, 5002, "购买成功，但刷新商城列表失败")
+		result.RefreshComplete = false
+	} else {
+		result.StoreItems = storeItems
+	}
+	if result.RefreshComplete {
+		h.writeSuccess(w, result)
 		return
 	}
-	h.writeSuccess(w, domain.StarlightPurchaseResult{Starlight: starlight, Inventory: inventory, PurchaseHistory: history, StoreItems: storeItems})
+	h.writeJSON(w, http.StatusOK, envelope{
+		Code: successCode,
+		Msg:  "购买成功，部分展示数据刷新失败，请稍后重新打开库存或商城",
+		Data: result,
+	})
 }
 
 func (h *Handler) handleStardustPurchase(w http.ResponseWriter, r *http.Request) {
@@ -641,19 +663,35 @@ func (h *Handler) handleStardustPurchase(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	result := domain.StardustPurchaseResult{
+		Stardust:        stardust,
+		Inventory:       []domain.InventoryItem{},
+		StoreItems:      []domain.StoreItem{},
+		RefreshComplete: true,
+	}
 	inventory, err := h.players.Inventory(r.Context(), steamID)
 	if err != nil {
 		h.logger.Error("load inventory after stardust purchase", "error", err)
-		h.writeError(w, http.StatusBadGateway, 5002, "购买成功，但刷新库存失败")
-		return
+		result.RefreshComplete = false
+	} else {
+		result.Inventory = inventory
 	}
 	storeItems, err := h.players.StoreItemsForPlayer(r.Context(), steamID)
 	if err != nil {
 		h.logger.Error("load store items after stardust purchase", "error", err)
-		h.writeError(w, http.StatusBadGateway, 5002, "购买成功，但刷新商城列表失败")
+		result.RefreshComplete = false
+	} else {
+		result.StoreItems = storeItems
+	}
+	if result.RefreshComplete {
+		h.writeSuccess(w, result)
 		return
 	}
-	h.writeSuccess(w, domain.StardustPurchaseResult{Stardust: stardust, Inventory: inventory, StoreItems: storeItems})
+	h.writeJSON(w, http.StatusOK, envelope{
+		Code: successCode,
+		Msg:  "购买成功，部分展示数据刷新失败，请稍后重新打开库存或商城",
+		Data: result,
+	})
 }
 
 func (h *Handler) handleStardustEquipment(w http.ResponseWriter, r *http.Request, equip bool) {
@@ -779,11 +817,16 @@ func buildEquipmentMutation(item domain.InventoryItem, modes []string, team stri
 }
 
 func productModeIsAllowed(expression, mode string) bool {
+	// 空 mode 与 COALESCE(..., 'ALL') / 启动器前端 (mode || "ALL") 对齐，视为全模式可用。
+	expression = strings.TrimSpace(expression)
+	if expression == "" {
+		expression = "ALL"
+	}
 	parts := strings.SplitN(expression, "#", 2)
-	allowed := parts[0]
+	allowed := strings.TrimSpace(parts[0])
 	disallowed := ""
 	if len(parts) == 2 {
-		disallowed = parts[1]
+		disallowed = strings.TrimSpace(parts[1])
 	}
 	if disallowed == "" {
 		return strings.Contains(allowed, "ALL") || strings.Contains(allowed, mode)
