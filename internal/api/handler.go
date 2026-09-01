@@ -22,10 +22,12 @@ import (
 )
 
 const (
-	successCode          = 2000
-	reauthHeader         = "X-StarCS-Reauth"
-	gameAPIKeyHeader     = "X-Star-Api-Key"
-	credentialsStaleCode = 4011
+	successCode            = 2000
+	reauthHeader           = "X-StarCS-Reauth"
+	gameAPIKeyHeader       = "X-Star-Api-Key"
+	sessionExpiredCode     = 4010
+	credentialsStaleCode   = 4011
+	invalidCredentialsCode = 4012
 )
 
 type envelope struct {
@@ -908,7 +910,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !h.skipPasswordAuth {
 		if err := h.players.Authenticate(r.Context(), steamID, request.Password); err != nil {
 			if errors.Is(err, mysqlrepo.ErrInvalidCredentials) {
-				h.writeError(w, http.StatusUnauthorized, 4003, "Steam64 或游戏内密码错误")
+				h.writeError(w, http.StatusUnauthorized, invalidCredentialsCode, "Steam64 或游戏内密码错误")
 				return
 			}
 			h.logger.Error("authenticate player", "error", err)
@@ -949,7 +951,7 @@ func (h *Handler) requireSession(w http.ResponseWriter, r *http.Request) (uint64
 	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
 	const prefix = "Bearer "
 	if !strings.HasPrefix(authorization, prefix) {
-		h.writeError(w, http.StatusUnauthorized, 4003, "请先登录")
+		h.writeError(w, http.StatusUnauthorized, sessionExpiredCode, "请先登录")
 		return 0, "", false
 	}
 	token := strings.TrimSpace(strings.TrimPrefix(authorization, prefix))
@@ -961,7 +963,7 @@ func (h *Handler) requireSession(w http.ResponseWriter, r *http.Request) (uint64
 	}
 	h.sessionMu.Unlock()
 	if !exists {
-		h.writeError(w, http.StatusUnauthorized, 4003, "登录会话无效或已过期")
+		h.writeError(w, http.StatusUnauthorized, sessionExpiredCode, "登录会话无效或已过期")
 		return 0, "", false
 	}
 	return current.steamID, token, true
@@ -981,7 +983,7 @@ func (h *Handler) verifyOperationPassword(w http.ResponseWriter, r *http.Request
 			h.sessionMu.Lock()
 			delete(h.sessions, token)
 			h.sessionMu.Unlock()
-			h.writeError(w, http.StatusUnauthorized, credentialsStaleCode, "游戏内密码已变更，请重新登录")
+			h.writeError(w, http.StatusUnauthorized, credentialsStaleCode, "密码不正确或已变更，请重新登录")
 			return false
 		}
 		h.logger.Error("reauthenticate player operation", "error", err)

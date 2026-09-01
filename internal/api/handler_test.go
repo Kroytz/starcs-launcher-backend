@@ -473,6 +473,42 @@ func TestWrongOperationPasswordRevokesSession(t *testing.T) {
 	}
 }
 
+func TestInvalidSessionReturnsSessionExpiredCode(t *testing.T) {
+	handler := newAuthenticatedHandler()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/me/inventory", nil)
+	request.Header.Set("Authorization", "Bearer invalid-or-expired-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d: %s", response.Code, response.Body.String())
+	}
+	var body envelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != 4010 {
+		t.Fatalf("expected session expired code 4010, got %d", body.Code)
+	}
+}
+
+func TestLoginRejectsWrongPasswordWithInvalidCredentialsCode(t *testing.T) {
+	handler := newAuthenticatedHandler()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"steamId":"76561198000000001","password":"wrong-password"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d: %s", response.Code, response.Body.String())
+	}
+	var body envelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != 4012 {
+		t.Fatalf("expected invalid credentials code 4012, got %d", body.Code)
+	}
+}
+
 func TestEquipmentEndpointsReadAndMutateServerPreferences(t *testing.T) {
 	service := &fakeEquipmentService{}
 	handler := newEquipmentHandler(service)
@@ -657,6 +693,13 @@ func TestInventoryRequiresLogin(t *testing.T) {
 	newAuthenticatedHandler().ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status 401, got %d", response.Code)
+	}
+	var body envelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != 4010 {
+		t.Fatalf("expected session expired code 4010, got %d", body.Code)
 	}
 }
 
