@@ -957,7 +957,8 @@ func (r *Repository) loadStoreItems(ctx context.Context) ([]domain.StoreItem, er
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT pp.id, p.id, p.name, p.desc, p.label, p.type, p.rarity_id,
 		       COALESCE(r.name, ''), pp.price, pp.sort, COALESCE(f.relative_path, ''),
-		       COALESCE(pp.days, 0), COALESCE(pp.quantity, 1)
+		       COALESCE(pp.days, 0), COALESCE(pp.quantity, 1),
+		       COALESCE(NULLIF(TRIM(p.mode), ''), 'ALL')
 		FROM sls_product_pricing AS pp
 		INNER JOIN sls_product AS p ON p.id = pp.product_id
 		LEFT JOIN sls_product_rarity AS r ON r.id = p.rarity_id
@@ -979,9 +980,9 @@ func (r *Repository) loadStoreItems(ctx context.Context) ([]domain.StoreItem, er
 	items := make([]domain.StoreItem, 0)
 	for rows.Next() {
 		var pricingID, productID int64
-		var name, description, label, rarityName, relativePath string
+		var name, description, label, rarityName, relativePath, mode string
 		var productType, rarityID, price, sortOrder, days, quantity int
-		if err := rows.Scan(&pricingID, &productID, &name, &description, &label, &productType, &rarityID, &rarityName, &price, &sortOrder, &relativePath, &days, &quantity); err != nil {
+		if err := rows.Scan(&pricingID, &productID, &name, &description, &label, &productType, &rarityID, &rarityName, &price, &sortOrder, &relativePath, &days, &quantity, &mode); err != nil {
 			return nil, fmt.Errorf("scan store item: %w", err)
 		}
 		category, icon := displayType(label, productType)
@@ -1002,6 +1003,7 @@ func (r *Repository) loadStoreItems(ctx context.Context) ([]domain.StoreItem, er
 			Enabled:         true,
 			Sort:            sortOrder,
 			ImageURL:        publicFileURL(relativePath),
+			Mode:            mode,
 		})
 	}
 	if err := rows.Err(); err != nil {

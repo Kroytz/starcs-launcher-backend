@@ -51,6 +51,7 @@ type StoreItem struct {
 	Enabled         bool   `json:"enabled"`
 	Sort            int    `json:"sort"`
 	ImageURL        string `json:"imageUrl"`
+	Mode            string `json:"mode,omitempty"`
 	StardustType    string `json:"stardustType,omitempty"`
 }
 
