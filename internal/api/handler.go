@@ -182,6 +182,7 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/api/v1/launcher/manifest", h.handleLauncherUpdateManifest)
 	mux.HandleFunc("/api/v1/auth/login", h.handleLogin)
 	mux.HandleFunc("/api/v1/auth/verify", h.handleVerifyPassword)
+	mux.HandleFunc("/api/v1/me/tasks", h.handleTasks)
 	mux.HandleFunc("/api/v1/me/inventory", h.handleInventory)
 	mux.HandleFunc("/api/v1/me/equipment", h.handleEquipment)
 	mux.HandleFunc("/api/v1/me/equipment/equip", h.handleEquip)
@@ -214,6 +215,7 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"version":   "0.1.0",
 		"health":    "/healthz",
 		"bootstrap": "/api/v1/bootstrap",
+		"tasks":     "/api/v1/me/tasks",
 	})
 }
 

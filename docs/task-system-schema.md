@@ -91,7 +91,7 @@
 
 ## 后端合并流程
 
-建议新增 `GET /api/v1/me/tasks`，而不是继续膨胀登录响应：
+后端已提供只读的 `GET /api/v1/me/tasks`，避免继续膨胀登录响应：
 
 1. 查询当前已发布且位于有效时间窗内的 campaign/group/definition；
 2. 对 `native` 任务按服务端生成的 `period_key` 读取新进度表；
@@ -156,7 +156,7 @@
 ## 上线顺序
 
 1. 应用 `005_launcher_task_system.sql`，仅建表和登记旧任务映射；现有逻辑不受影响。
-2. 后端实现只读的统一任务查询与 legacy adapter。
+2. 后端实现只读的统一任务查询与 legacy adapter。（已完成）
 3. 登陆器任务页从 Demo 数据切换到查询接口；旧 Profile 通行证保留。
 4. 接入游戏服事件上报，先启用新手或小活动任务验证原生进度。
 5. 实现幂等领取和奖励 worker。

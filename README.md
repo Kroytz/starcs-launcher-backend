@@ -74,6 +74,7 @@ go run -buildvcs=false ./cmd/import_stardust_catalog -file E:\Downloads\StarDust
 | GET | `/api/v1/workshop-packs?mode=ZM` | 获取公共基础资源包与指定模式资源包 |
 | POST | `/api/v1/auth/login` | 使用 Steam64 与游戏内密码登录，并返回真实库存 |
 | POST | `/api/v1/auth/verify` | 敏感操作前使用 Bearer 会话与当前密码复验 |
+| GET | `/api/v1/me/tasks` | 读取统一任务树与旧通行证投影；需要 Bearer 会话和 `X-StarCS-Reauth` |
 | GET | `/api/v1/me/inventory` | 使用 Bearer 会话读取真实库存，并通过 `X-StarCS-Reauth` 携带当前密码 |
 | GET | `/api/v1/me/equipment` | 读取 StarLightStore 在所有支持模式中的真实装备配置 |
 | POST | `/api/v1/me/equipment/equip` | 装备当前账号持有的角色/武器外观 |
@@ -96,6 +97,7 @@ Invoke-RestMethod 'http://localhost:8080/api/v1/workshop-packs?mode=ZM'
 ```powershell
 $login = Invoke-RestMethod -Method Post -ContentType 'application/json' -Body '{"steamId":"7656119xxxxxxxxxx","password":"游戏内密码"}' http://localhost:8080/api/v1/auth/login
 Invoke-RestMethod -Headers @{ Authorization = "Bearer $($login.data.token)"; 'X-StarCS-Reauth' = '游戏内密码' } http://localhost:8080/api/v1/me/inventory
+Invoke-RestMethod -Headers @{ Authorization = "Bearer $($login.data.token)"; 'X-StarCS-Reauth' = '游戏内密码' } http://localhost:8080/api/v1/me/tasks
 ```
 
 游戏服控制面示例（需游戏服已通过 WSS 连上）：
@@ -119,6 +121,7 @@ Invoke-RestMethod -Method Post -Headers $headers -ContentType 'application/json'
 - 游戏服通过 Steam 授权态确认玩家身份后，可携带 `identityValidated: true` 直接设置或重置密码，无需旧密码。Go 后端统一负责生成摘要，C# 插件不会自行实现哈希算法。
 - 游戏服改密接口对参数或旧密码等业务失败保持 HTTP 200，并通过 `code/msg/data` 表达结果，以兼容 Star-Core 的标准 HTTP 客户端；API Key 失败和服务故障仍返回对应 HTTP 错误。
 - 登陆器登录后，每次真实库存读取或装备等敏感操作都会再次提交当前密码校验。校验失败时该 Bearer 会话会立即失效，登陆器应同步退出登录。
+- 统一任务接口只读取 `launcher_task_*` 表；旧通行证任务继续以 `season_pass_*` 为权威并通过 `launcher_task_legacy_binding` 投影。当前版本未开放任务事件写入和奖励领取接口。
 - 装备配置不直接写库存数据库；后端通过 Star-Core 已有的 ClientPrefs API 更新 `star_light_store` 插件的 `p_s` 与 `w_s`，并保留同插件的其他偏好键。
 - `STAR_SKIP_PASSWORD_AUTH=true` 时仅校验 Steam64 格式并签发 24 小时只读会话；默认关闭，不能直接用于公开生产环境。
 - 登录会话保存在后端内存中，有效期 24 小时；服务重启后需要重新登录。
