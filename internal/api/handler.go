@@ -192,6 +192,7 @@ func NewHandler(store demo.Store, players PlayerRepository, logger *slog.Logger,
 	mux.HandleFunc("/api/v1/me/store/purchase", h.handleStarlightPurchase)
 	mux.HandleFunc("/api/v1/me/stardust/purchase", h.handleStardustPurchase)
 	mux.HandleFunc("/internal/v1/game-password", h.handleGamePassword)
+	mux.HandleFunc("POST /internal/v1/task-events/batch", h.handleTaskEventsBatch)
 	if h.gameWS != nil {
 		mux.Handle("/internal/v1/ws/game", h.gameWS)
 		mux.HandleFunc("POST /internal/v1/servers/{serverId}/commands", h.handleGameServerCommand)

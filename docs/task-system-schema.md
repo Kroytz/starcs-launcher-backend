@@ -110,24 +110,40 @@
 
 ## 原生任务进度
 
-游戏服向受保护的内部接口提交带 UUID 的事件，例如：
+游戏服通过 StarCore 的统一任务事件接口，把游戏事实批量提交到受保护的
+`POST /internal/v1/task-events/batch`。请求使用与游戏服控制面一致的
+`X-Star-Api-Key`，单批最多 100 条。每条事件都必须带 UUID，例如：
 
 ```json
 {
-  "eventId": "4d62e911-b553-4181-8a13-d81b38fa35e7",
-  "steamId": "76561198000000000",
-  "metric": "match.completed",
-  "delta": 1,
-  "dimensions": {
-    "mode": "ZM",
-    "map": "zm_example",
-    "won": true
-  },
-  "occurredAt": "2026-09-02T12:00:00Z"
+  "serverId": "zm-01",
+  "events": [{
+    "eventId": "4d62e911-b553-4181-8a13-d81b38fa35e7",
+    "source": "ZombieZeta",
+    "steamId": "76561198000000000",
+    "metric": "match.completed",
+    "value": 1,
+    "distinctKey": "zm_example",
+    "dimensions": {
+      "mode": "ZM",
+      "map": "zm_example",
+      "won": true
+    },
+    "occurredAt": "2026-09-02T12:00:00Z"
+  }]
 }
 ```
 
-处理器先以 `event_id` 插入 inbox 去重，再匹配 `metric_key + criteria_json`，在事务内更新符合条件的玩家任务。`distinct` 任务必须使用稳定的 `distinct_key`，例如地图名或模式名，并先写入 `launcher_player_task_distinct_value`；只有首次插入成功时才增加进度。不能只依赖 event ID，因为同一地图可能产生多个不同事件。
+处理器逐条在事务中以 `event_id` 插入 inbox 去重，再匹配
+`metric_key + criteria_json` 并更新符合条件的原生任务。重复批次返回成功但计入
+`duplicates`，因此 StarCore 可以安全重试整个批次。`distinct` 任务必须使用稳定的
+`distinctKey`，例如地图名或模式名，并先写入
+`launcher_player_task_distinct_value`；只有首次插入成功时才增加进度。不能只依赖
+event ID，因为同一地图可能产生多个不同事件。
+
+玩法插件不能传入 task ID 或直接设置完成状态。它们只上报 metric；任务匹配、周期、
+目标值和完成状态均由后端控制。游戏服接口只接受正向值，人工回退或修正应使用单独的
+管理员接口，避免普通玩法插件意外扣减任务进度。
 
 新手任务中的“打开库存”等纯登陆器行为也必须上报后端；不能只在本地标记，否则更换设备后会重新出现。
 
