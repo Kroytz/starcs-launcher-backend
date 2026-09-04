@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS launcher_task_campaign (
     UNIQUE KEY uk_launcher_task_campaign_code (code),
     KEY idx_launcher_task_campaign_visible (status, starts_at, ends_at, sort_order),
     CONSTRAINT chk_launcher_task_campaign_window CHECK (ends_at IS NULL OR starts_at IS NULL OR ends_at > starts_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS launcher_task_group (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -43,12 +43,11 @@ CREATE TABLE IF NOT EXISTS launcher_task_group (
     PRIMARY KEY (id),
     UNIQUE KEY uk_launcher_task_group_code (campaign_id, code),
     KEY idx_launcher_task_group_visible (campaign_id, category, enabled, sort_order),
-    CONSTRAINT fk_launcher_task_group_campaign FOREIGN KEY (campaign_id) REFERENCES launcher_task_campaign (id),
     CONSTRAINT chk_launcher_task_group_required_count CHECK (
         (completion_rule = 'count' AND required_task_count IS NOT NULL AND required_task_count > 0)
         OR (completion_rule <> 'count' AND required_task_count IS NULL)
     )
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS launcher_task_definition (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -75,10 +74,9 @@ CREATE TABLE IF NOT EXISTS launcher_task_definition (
     UNIQUE KEY uk_launcher_task_definition_revision (group_id, code, revision),
     KEY idx_launcher_task_definition_visible (group_id, enabled, sort_order),
     KEY idx_launcher_task_definition_metric (progress_source, metric_key),
-    CONSTRAINT fk_launcher_task_definition_group FOREIGN KEY (group_id) REFERENCES launcher_task_group (id),
     CONSTRAINT chk_launcher_task_definition_target CHECK (target_value > 0),
     CONSTRAINT chk_launcher_task_definition_window CHECK (retired_at IS NULL OR published_at IS NULL OR retired_at > published_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS launcher_task_reward (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -92,11 +90,9 @@ CREATE TABLE IF NOT EXISTS launcher_task_reward (
     PRIMARY KEY (id),
     KEY idx_launcher_task_reward_task (task_id, sort_order),
     KEY idx_launcher_task_reward_group (group_id, sort_order),
-    CONSTRAINT fk_launcher_task_reward_task FOREIGN KEY (task_id) REFERENCES launcher_task_definition (id),
-    CONSTRAINT fk_launcher_task_reward_group FOREIGN KEY (group_id) REFERENCES launcher_task_group (id),
     CONSTRAINT chk_launcher_task_reward_owner CHECK ((task_id IS NULL) <> (group_id IS NULL)),
     CONSTRAINT chk_launcher_task_reward_amount CHECK (amount > 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS launcher_task_legacy_binding (
     task_id BIGINT UNSIGNED NOT NULL,
@@ -112,9 +108,8 @@ CREATE TABLE IF NOT EXISTS launcher_task_legacy_binding (
     claimed_status_min SMALLINT UNSIGNED NOT NULL DEFAULT 2,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (task_id),
-    UNIQUE KEY uk_launcher_task_legacy_source (provider, season_id, legacy_scope, legacy_quest_key),
-    CONSTRAINT fk_launcher_task_legacy_definition FOREIGN KEY (task_id) REFERENCES launcher_task_definition (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    UNIQUE KEY uk_launcher_task_legacy_source (provider, season_id, legacy_scope, legacy_quest_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS launcher_player_task_progress (
     steam_id64 BIGINT UNSIGNED NOT NULL,
@@ -129,9 +124,8 @@ CREATE TABLE IF NOT EXISTS launcher_player_task_progress (
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (steam_id64, task_id, period_key),
     KEY idx_launcher_player_task_state (steam_id64, state, updated_at),
-    KEY idx_launcher_player_task_definition (task_id, period_key, state),
-    CONSTRAINT fk_launcher_player_task_definition FOREIGN KEY (task_id) REFERENCES launcher_task_definition (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    KEY idx_launcher_player_task_definition (task_id, period_key, state)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS launcher_player_task_distinct_value (
     steam_id64 BIGINT UNSIGNED NOT NULL,
@@ -140,9 +134,8 @@ CREATE TABLE IF NOT EXISTS launcher_player_task_distinct_value (
     distinct_key VARCHAR(160) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     first_seen_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (steam_id64, task_id, period_key, distinct_key),
-    KEY idx_launcher_player_task_distinct_definition (task_id, period_key),
-    CONSTRAINT fk_launcher_player_task_distinct_definition FOREIGN KEY (task_id) REFERENCES launcher_task_definition (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    KEY idx_launcher_player_task_distinct_definition (task_id, period_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS launcher_player_task_group_state (
     steam_id64 BIGINT UNSIGNED NOT NULL,
@@ -153,9 +146,8 @@ CREATE TABLE IF NOT EXISTS launcher_player_task_group_state (
     claimed_at DATETIME(6) NULL,
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (steam_id64, group_id, period_key),
-    KEY idx_launcher_player_task_group_state (steam_id64, state, updated_at),
-    CONSTRAINT fk_launcher_player_task_group_definition FOREIGN KEY (group_id) REFERENCES launcher_task_group (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    KEY idx_launcher_player_task_group_state (steam_id64, state, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS launcher_task_claim (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -175,10 +167,8 @@ CREATE TABLE IF NOT EXISTS launcher_task_claim (
     UNIQUE KEY uk_launcher_task_claim_task (steam_id64, task_id, period_key),
     UNIQUE KEY uk_launcher_task_claim_group (steam_id64, group_id, period_key),
     KEY idx_launcher_task_claim_retry (status, updated_at),
-    CONSTRAINT fk_launcher_task_claim_task FOREIGN KEY (task_id) REFERENCES launcher_task_definition (id),
-    CONSTRAINT fk_launcher_task_claim_group FOREIGN KEY (group_id) REFERENCES launcher_task_group (id),
     CONSTRAINT chk_launcher_task_claim_owner CHECK ((task_id IS NULL) <> (group_id IS NULL))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS launcher_task_event_inbox (
     event_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -194,7 +184,7 @@ CREATE TABLE IF NOT EXISTS launcher_task_event_inbox (
     PRIMARY KEY (event_id),
     KEY idx_launcher_task_event_pending (processed_at, created_at),
     KEY idx_launcher_task_event_player (steam_id64, metric_key, occurred_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Compatibility catalogue for the tasks that remain hard-coded in the
 -- existing season-pass game implementation. Rewards are intentionally not
